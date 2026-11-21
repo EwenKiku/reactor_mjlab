@@ -1,0 +1,6 @@
+[submodule "ThirdParty/mjlab"]
+	path = ThirdParty/mjlab
+	url = https://github.com/EwenKiku/mjlab.git
+[submodule "ThirdParty/rsl_rl"]
+	path = ThirdParty/rsl_rl
+	url = https://github.com/EwenKiku/rsl_rl.git
