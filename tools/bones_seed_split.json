@@ -1,0 +1,198 @@
+{
+  "train": [
+    {
+      "source": "soma_uniform/bvh/210531/jump_and_land_light_002__A001_M.bvh",
+      "sha256": "bf4a1db293d25d42182f391f3bcfd72b4eb43e3aeec93c13d8d04a4200261db2"
+    },
+    {
+      "source": "soma_uniform/bvh/210531/jump_and_land_light_003__A002.bvh",
+      "sha256": "5da168e6056297a51dca6de63cacb0cc14933779701e9f69eac17e6ca3751d7b"
+    },
+    {
+      "source": "soma_uniform/bvh/210531/walk_forward_hips_amplified_impro_003__A001_M.bvh",
+      "sha256": "8a0ef4f7fe49f81b5439b354ebf0172920e2b7b40dff76c1f732603cb8b8be8a"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/dancecards1_AB_normal_001__A005_M.bvh",
+      "sha256": "b9cc3528306f46c3233400f55bd880130786206fc8e50bf2c77775ee50684f01"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/dancecards1_CD_normal_001__A006_M.bvh",
+      "sha256": "3406923ee627fa9e588b3990188652d7ae55ffa81febe9ec1c0060e456afe070"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/dancecards1_CD_normal_001__A008_M.bvh",
+      "sha256": "026bb79ad2c81d986aaf01fddf6284acafa6363c6b92d77ef670ff052bdc117a"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/walk_fast_forward_grab_normal_001__A008.bvh",
+      "sha256": "7b34983f057fb89d96588d4cfdb6dc686b9a3f7addb8eff40b39f6fb5a0c4976"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/walk_forward_grab_normal_003__A005.bvh",
+      "sha256": "da59242df0e76c282f8e7457470cff46dc5c459dbbb1936fb06faee17080809a"
+    },
+    {
+      "source": "soma_uniform/bvh/210707/walk_forward_grab_normal_003__A006_M.bvh",
+      "sha256": "d79c35ea53c1834306e1c21dce9d3d7d3ec01dd887b17a6b25b25160730a705e"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Idle_Right_001__A017.bvh",
+      "sha256": "a9a22b5a8d3563ee6150fb609651bde4f1ca4668f42377488f9ee7d2adeee6b5"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Idle_Right_001__A018.bvh",
+      "sha256": "1e2e57b1e1f48fbc91a54ed6208387a02cc893ec4b52601ab43f1c3a3950332a"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Idle_Right_001__A019.bvh",
+      "sha256": "2e35d9025ca53433718d5c31a83955a65d6bda37dfd3ed6d5fe0091b88e00098"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Jump_Right_001__A017.bvh",
+      "sha256": "3493dd9b9ba2e1de9c70971ef10c5827b819621960d928bad1bee213e3775e13"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Jump_Right_001__A018.bvh",
+      "sha256": "eae5e109ad4a21b9b6ce4212d0cd93fa182d5de301c977253422710b3ce721df"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Jump_Right_001__A019.bvh",
+      "sha256": "ccd8e9ebbba90c6eb9e059bc077a59309640eb2b5c0f79ed10d0322b3198f1f1"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Jump_Right_001__A020.bvh",
+      "sha256": "da901d4bc69186b2c50625f565cfc8c2bc94b05053a7a0d9a2b4ae416f633065"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Step_Rotate_Reaction_Idle_0270_001__A017_M.bvh",
+      "sha256": "bc566c4e38416312f54f417ca0952010fb7159a177836bec237ac92f9bb8f081"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Step_Rotate_Reaction_Idle_0270_001__A018_M.bvh",
+      "sha256": "62a32a48fa975e8bf9097ebfefb4b5f71bceeb0ca53ed817036094c4fdc3fa3a"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Turn_Start_Walk_0045_003__A017_M.bvh",
+      "sha256": "00d14a478897169806a5fc1864f5d7729d0e94c528fe564c6f18af9d205126ba"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Turn_Start_Walk_0045_003__A018_M.bvh",
+      "sha256": "e271004fc94f89dbdfcd6bd654e1bb1b896065ca9bd9c1030083dd02f3ee7bd3"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Turn_Start_Walk_0045_003__A019_M.bvh",
+      "sha256": "67cc21636ca48a4b15562f0034e1ea6dc01fde5b507e1ffb29c1b7181e9a5a48"
+    },
+    {
+      "source": "soma_uniform/bvh/220705/Turn_Start_Walk_0045_003__A020_M.bvh",
+      "sha256": "01ba5681dd2acaf2181e329f0fbbdaf82b6ebe4259f3b12c80be083437cd6de8"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/jog_sideway_045_stop_001__A021.bvh",
+      "sha256": "68f91585da5a38cd3d1c62edba2f03335540d02f621fe279d0c35cbd0e7d1429"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/jog_sideway_045_stop_001__A022_M.bvh",
+      "sha256": "d8321bad721cf8359f390a5a7b33e9166c69a34e5e508ef0d2f284ae7655050a"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/jog_sideway_045_stop_001__A023_M.bvh",
+      "sha256": "98d420e0b7650e0cea22af13171d977073908c91881bee93ffbad4ec1a247992"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/jog_sideway_045_stop_001__A024.bvh",
+      "sha256": "70ff039a4e436b6c6e2dc54b5447589bcd6972551c27ab50b4e9ee09bc0cb118"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/sit_croos_legged_stop_003__A022.bvh",
+      "sha256": "273c4df603726ff05210d59957dd8b41b9b73e8a2dd65e53868b9f042d518365"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/sit_on_heels_loop_001__A021.bvh",
+      "sha256": "e63c68194b17af1616e5ea0cb331406a0991f69c22e029ea600c907bf8512539"
+    },
+    {
+      "source": "soma_uniform/bvh/230119/crouch_ff_start_225_103__A125_M.bvh",
+      "sha256": "6e1bdb674a5555e10e705b339a4ca24d3afa871699af66a4a8b0916ed77a1d6d"
+    },
+    {
+      "source": "soma_uniform/bvh/230119/crouch_ff_start_270_002__A126_M.bvh",
+      "sha256": "65a1012fd9361f0e69e7547543f272667e460db61b8cf982e2d3974d33127bf6"
+    },
+    {
+      "source": "soma_uniform/bvh/230119/crouch_ff_start_270_002__A127.bvh",
+      "sha256": "c90a6bf5ae5c13430d608c079385734198ad6fb52a1c1ae97a30350662f8e4e0"
+    },
+    {
+      "source": "soma_uniform/bvh/230119/crouch_ff_start_315_001__A128.bvh",
+      "sha256": "64765a783de5ad1169a2d8e1de18021a5d98568c030ed21dd587ef7720317610"
+    },
+    {
+      "source": "soma_uniform/bvh/230411/dance_basic_turn_v2_360_R_002__A306_M.bvh",
+      "sha256": "9baf347c783ddbe3ea01a594739c3057b2c98bf9ef6aaf6f5e2dc930f5a1108e"
+    },
+    {
+      "source": "soma_uniform/bvh/230411/dance_basic_turn_v2_360_R_002__A307_M.bvh",
+      "sha256": "ebfceb57811a1c005f3e670c99f2fe43fd2992531f1436b2b908363098c7f2a8"
+    },
+    {
+      "source": "soma_uniform/bvh/230411/dance_basic_turn_v2_360_R_002__A308_M.bvh",
+      "sha256": "3495122eec6f734f8a8d5439844c0c70c6454b6f07b7ad15451cc8ddd08479ba"
+    },
+    {
+      "source": "soma_uniform/bvh/230417/run_stop_180_R_001__A326.bvh",
+      "sha256": "2ea48118d903f9edd9411570dd32debbff582e236a6803a01c1261c601c3b13d"
+    },
+    {
+      "source": "soma_uniform/bvh/230417/run_stop_180_R_001__A327.bvh",
+      "sha256": "272097f1b84f729e1d0f146a7d2992f0e80a455beec128847e4102fd0c77e09a"
+    },
+    {
+      "source": "soma_uniform/bvh/230417/run_stop_180_R_001__A328.bvh",
+      "sha256": "1fb55476533af3d45499a611b2b33f2494260d69f106b7b9ce39e56343b6314f"
+    },
+    {
+      "source": "soma_uniform/bvh/230713/standing_talking_to_sitting_R_003__A428.bvh",
+      "sha256": "4188640988ff619c75ebc4d364549d0eb718c630f801fbe0d5eafbacf3474749"
+    },
+    {
+      "source": "soma_uniform/bvh/230713/standing_talking_to_sitting_R_004__A429.bvh",
+      "sha256": "1a7e66652b9646263d5b0e4ddc2f4c63c034ea4ebe903200b3ebb869d9dba926"
+    },
+    {
+      "source": "soma_uniform/bvh/231024/kick_back_001__A492_M.bvh",
+      "sha256": "78928b95c7eacdafe99c0484a218c551c61e6482196d573c052b3bcc795fe342"
+    },
+    {
+      "source": "soma_uniform/bvh/231024/kick_back_001__A493_M.bvh",
+      "sha256": "a7cc05fdf4880ed61b452d05711e8bbe68273f7262d7374abe3e4275c09787e9"
+    }
+  ],
+  "heldout": [
+    {
+      "source": "soma_uniform/bvh/210531/walk_forward_professional_impro_001__A002_M.bvh",
+      "sha256": "e7fd9f694c166ac8af653674bcc64640597fbe7c3e50b93594f3c8cab6066046"
+    },
+    {
+      "source": "soma_uniform/bvh/220713/walk_sideway_045_stop_001__A021_M.bvh",
+      "sha256": "e90af9f839ef68639fbc2e35893a984b4d505d790ab55c429f0d84ff9800a064"
+    },
+    {
+      "source": "soma_uniform/bvh/220714/jog_sideway_045_start_002__A025.bvh",
+      "sha256": "72a5ab4f7695f2024ac27b7d235d0c290f7f643e37a794c4130f393ba1bef536"
+    },
+    {
+      "source": "soma_uniform/bvh/230417/run_start_180_R_003__A329_M.bvh",
+      "sha256": "bf613eb039a2cd212b0161c4edad78043e787a51dbd3a38f81f8b35d6b678c9d"
+    },
+    {
+      "source": "soma_uniform/bvh/230509/squat_002__A359_M.bvh",
+      "sha256": "ee06204c23b72272d2aa3e4132b472dea28028d4ac803a801067fb53b4c44357"
+    },
+    {
+      "source": "soma_uniform/bvh/230509/squat_002__A360_M.bvh",
+      "sha256": "3e2828e907948222d25dbd747bb245e3e671975a3de75c5d443684a1679c72fc"
+    }
+  ]
+}
