@@ -106,20 +106,14 @@ pip install -e ThirdParty/mjlab -e ThirdParty/rsl_rl
 python -m scripts.list_envs
 ```
 
-本次模型先用有界跟踪奖励学习平衡，然后从 `model_600.pt` 切换到论文 Table 1 的负平方误差，继续 700 次 PPO 更新。第二阶段逐刚体累计位置和测地朝向误差，关节动作差分只计算 20 个受控关节。两个阶段均使用上层参数更新。
+训练使用论文 Table 1 的负平方跟踪误差。逐刚体累计位置和测地朝向误差，关节动作差分只计算 20 个受控关节，同时做上层参数更新。
 
 ```bash
-python -m scripts.train Pi-Plus-ReActor-Warmup-Flat \
-  --env.scene.num-envs 1024 --agent.max-iterations 601 \
-  --agent.save-interval 100 --agent.run-name boneseed_base
-
 python -m scripts.train Pi-Plus-ReActor-Flat \
-  --env.scene.num-envs 1024 --agent.resume True \
-  --agent.load-run '.*_boneseed_base$' --agent.load-checkpoint 'model_600.pt' \
-  --agent.max-iterations 700 --agent.save-interval 100 --agent.run-name boneseed_table1
+  --env.scene.num-envs 1024 --agent.save-interval 100 --agent.run-name boneseed
 ```
 
-自定义训练集可通过 `--env.commands.motion.motion-files /path/to/converted/train` 指定。BVH 批量转换入口为 `python -m tools.convert_soma_bvh_to_npz --src /path/to/bvh --dst /path/to/converted/train`。两阶段默认都只读训练目录。复现回归检查可运行 `python -m unittest discover -s tests -v`。
+自定义训练集可通过 `--env.commands.motion.motion-files /path/to/converted/train` 指定。BVH 批量转换入口为 `python -m tools.convert_soma_bvh_to_npz --src /path/to/bvh --dst /path/to/converted/train`。默认只读训练目录。复现回归检查可运行 `python -m unittest discover -s tests -v`。
 
 ## 实现与论文的对应关系
 
@@ -130,6 +124,5 @@ python -m scripts.train Pi-Plus-ReActor-Flat \
 | `mdp/commands.py`、`rl/runner.py` | 用物理 rollout 的有效帧计算上层损失，通过参数化参考反传并投影更新，保存和恢复共享偏移、分片段高度、标定、策略及观测归一化。 |
 | `config/pi_plus/env_cfg.py`、`mdp/actions.py` | actor 接收 17 个目标刚体在机器人根系中的位置、6D 朝向、线/角速度，以及本体状态、历史动作和初始化相位。每步输出 20 个关节目标和 6 维辅助 wrench。 |
 | `tools/export_reactor_retarget.py` | 在训练时使用的机器人模型和控制频率下执行确定性策略，导出物理状态。 |
-| `Pi-Plus-Track-Flat` | 仓库的下游无 wrench 跟踪任务。可显式传入本次导出的成功轨迹目录作为 `--env.commands.motion.motion-files`。 |
 
 本次训练平台为 RTX 5080、MuJoCo Warp、1,024 并行环境 × 每轮 24 步。论文实验使用 Isaac Sim、4,096 环境、20,000 轮以及其他机器人和数据集。这里沿用双层优化、残余力控制和策略条件输入；Pi Plus 的力矩尺度、初始化扰动、训练预算和数据覆盖有单独配置。论文原文见 [ReActor](doc/ReActor:%20Reinforcement%20Learning%20for%20Physics-Aware%20Motion%20Retargeting.pdf)。

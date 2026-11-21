@@ -6,8 +6,7 @@ depend on proper tracking are scaled by the retargeting phase ``psi`` so the
 policy is not punished while it moves into the start pose; trajectory segments
 with ``psi < 1`` are excluded from the upper-level buffer (see ``commands``).
 
-The default uses the negative squared losses of Table 1. The optional
-kernel reward supports the initial balance-training stage.
+Tracking terms use the negative squared losses of Table 1.
 """
 
 from __future__ import annotations
@@ -15,13 +14,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import torch
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
 from src.tasks.reactor.mdp.commands import RetargetCommand
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
-  from mjlab.sensor import ContactSensor
+
+_ROBOT = SceneEntityCfg("robot")
 
 
 def _command(env: ManagerBasedRlEnv, command_name: str) -> RetargetCommand:
@@ -66,10 +67,6 @@ def _tracking(
     ).square()
   else:
     raise ValueError(f"Unknown tracking term {term!r}")
-  if command.cfg.tracking_reward == "kernel":
-    if error.ndim == 2:
-      error = error.mean(-1)
-    return torch.exp(-error / std**2)
   return -error.sum(-1) if error.ndim == 2 else -error
 
 
@@ -139,6 +136,13 @@ def wrench_torque_l1(
   term = env.action_manager.get_term(action_name)
   psi = _command(env, command_name).psi
   return term.applied_wrench[:, 3:].abs().sum(dim=-1) * psi
+
+
+def joint_torques_l2(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _ROBOT
+) -> torch.Tensor:
+  tau = env.scene[asset_cfg.name].data.qfrc_actuator[:, asset_cfg.joint_ids]
+  return torch.sum(torch.square(tau), dim=1)
 
 
 def joint_action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:

@@ -740,7 +740,6 @@ class RetargetCommandCfg(CommandTermCfg):
   sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
   adaptive_uniform_ratio: float = 0.1
   #: Upper-level knobs (Table 2 of the paper).
-  tracking_reward: Literal["squared", "kernel"] = "squared"
   collect_upper: bool = True
   param_lr: float = 1.0e-4
   alpha: float = 0.0

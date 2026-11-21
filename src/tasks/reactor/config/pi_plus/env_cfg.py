@@ -17,14 +17,12 @@ from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
-from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import BuiltinSensorCfg, ContactMatch, ContactSensorCfg, ObjRef
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
@@ -33,15 +31,10 @@ from mjlab.viewer import ViewerConfig
 from src.assets.robots.pi_plus.pi_plus_constants import (
   PI_PLUS_FOOT_GEOM_EXPR,
   PI_PLUS_JOINT_ORDER,
-  PI_PLUS_RATED_EFFORT,
-  PI_PLUS_RATED_VELOCITY,
   get_pi_plus_robot_cfg,
 )
-from src.tasks.base import mdp as base_mdp
 from src.tasks.reactor import mdp as reactor_mdp
 from src.tasks.reactor.correspondences import (
-  BODY_PAIRS,
-  FEET_BODIES,
   ROOT_TARGET,
   SOURCE_BODIES,
   TARGET_BODIES,
@@ -65,8 +58,6 @@ def _target_nominal(env) -> tuple:
   return nominal_robot_frames(str(PI_PLUS_XML), TARGET_BODIES)
 
 
-ALL_JOINTS = SceneEntityCfg("robot", joint_names=(".*",))
-FEET = SceneEntityCfg("robot", body_names=FEET_BODIES, preserve_order=True)
 MOTION = {"command_name": "motion"}
 
 WRENCH_CFG = RootWrenchActionCfg(
@@ -136,40 +127,16 @@ def _rewards() -> dict[str, RewardTermCfg]:
     "body_position": track(reactor_mdp.body_position, 2.0, 0.3),
     "body_orientation": track(reactor_mdp.body_orientation, 2.0, 0.4),
     "survival": RewardTermCfg(func=envs_mdp.is_alive, weight=20.0),
-    # -- regularization
-    "joint_torques_l2": RewardTermCfg(func=base_mdp.joint_torques_l2, weight=-1e-4),
+    # -- regularization (Table 1). Action penalties cover the 20 controlled joints.
+    "joint_torques_l2": RewardTermCfg(func=reactor_mdp.joint_torques_l2, weight=-1e-4),
     "joint_acc_l2": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-1e-6),
-    "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-1e-2),
-    "action_jerk_l2": RewardTermCfg(func=base_mdp.action_jerk_l2, weight=-1e-2),
-    "joint_pos_limits": RewardTermCfg(
-      func=envs_mdp.joint_pos_limits, weight=-10.0, params={"asset_cfg": ALL_JOINTS}
-    ),
-    "joint_rated_velocity": RewardTermCfg(
-      func=base_mdp.joint_rated_velocity_limit,
-      weight=-0.05,
-      params={"rated_velocity": PI_PLUS_RATED_VELOCITY},
-    ),
-    "joint_rated_effort": RewardTermCfg(
-      func=base_mdp.joint_rated_effort_limit,
-      weight=-0.04,
-      params={"rated_effort": PI_PLUS_RATED_EFFORT},
-    ),
+    "action_rate_l2": RewardTermCfg(func=reactor_mdp.joint_action_rate, weight=-1e-2),
+    "action_jerk_l2": RewardTermCfg(func=reactor_mdp.joint_action_acceleration, weight=-1e-2),
     "wrench_force": RewardTermCfg(
       func=reactor_mdp.wrench_force_l1, weight=-1e-2, params={**MOTION}
     ),
     "wrench_torque": RewardTermCfg(
       func=reactor_mdp.wrench_torque_l1, weight=-1e-2, params={**MOTION}
-    ),
-    # -- contacts
-    "feet_slide": RewardTermCfg(
-      func=base_mdp.feet_slide,
-      weight=-0.3,
-      params={"sensor_name": "feet_contact", "asset_cfg": FEET},
-    ),
-    "undesired_contacts": RewardTermCfg(
-      func=base_mdp.undesired_self_contacts,
-      weight=-0.5,
-      params={"sensor_name": "self_contact"},
     ),
   }
 
@@ -228,29 +195,11 @@ def _scene(envs: int) -> SceneCfg:
     env_spacing=2.5,
     terrain=TerrainEntityCfg(terrain_type="plane"),
     entities={"robot": get_pi_plus_robot_cfg()},
-    sensors=(
-      ContactSensorCfg(
-        name="feet_contact",
-        primary=ContactMatch(mode="body", pattern=FEET_BODIES, entity="robot"),
-        secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("found", "force"),
-        reduce="netforce",
-        history_length=3,
-      ),
-      ContactSensorCfg(
-        name="self_contact",
-        primary=ContactMatch(mode="body", pattern=".*", entity="robot"),
-        secondary=ContactMatch(mode="subtree", pattern=ROOT_TARGET, entity="robot"),
-        fields=("found", "force"),
-        reduce="netforce",
-        history_length=3,
-      ),
-    ),
   )
 
 
 def pi_plus_reactor_env_cfg(
-  play: bool = False, motion_file: str | None = None, num_envs: int = 4096, warmup: bool = False
+  play: bool = False, motion_file: str | None = None, num_envs: int = 4096
 ) -> ManagerBasedRlEnvCfg:
   cfg = ManagerBasedRlEnvCfg(
     decimation=4,
@@ -275,7 +224,6 @@ def pi_plus_reactor_env_cfg(
         source_bodies=SOURCE_BODIES,
         target_bodies=TARGET_BODIES,
         target_nominal=_target_nominal,
-        tracking_reward="kernel" if warmup else "squared",
         psi_ramp_s=0.2,
         joint_position_range=(-0.15, 0.15),
       )
@@ -300,20 +248,13 @@ def pi_plus_reactor_env_cfg(
       elevation=-5.0,
       azimuth=90.0,
     ),
-    # The 17 tracked bodies, self-contact and crouching clips need more
-    # constraint rows than the bare robot; 400 overflowed in practice.
+    # Crouching clips need more constraint rows than the bare robot; 400 overflowed.
     sim=SimulationCfg(
       njmax=800,
       nconmax=256,
       mujoco=MujocoCfg(timestep=0.005, iterations=20, ls_iterations=30),
     ),
   )
-  if not warmup:
-    cfg.rewards["action_rate_l2"].func = reactor_mdp.joint_action_rate
-    cfg.rewards["action_jerk_l2"].func = reactor_mdp.joint_action_acceleration
-    for extra in ("joint_pos_limits", "joint_rated_velocity", "joint_rated_effort",
-                  "feet_slide", "undesired_contacts"):
-      del cfg.rewards[extra]
   if play:
     cfg.episode_length_s = int(1e6)
     cfg.observations["actor"].enable_corruption = False
