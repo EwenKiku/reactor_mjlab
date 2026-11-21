@@ -19,8 +19,11 @@ buffer each iteration and takes one TTSA step on ``p`` (Eq. 3, 6, 7).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import hashlib
+import os
+import zipfile
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -69,10 +72,11 @@ def _expand_motion_paths(paths: list[str] | tuple[str, ...]) -> list[str]:
 
 
 class SourceMotionLoader:
-  """Source body trajectories for every clip, concatenated along time.
+  """Source body trajectories kept in CPU memory and indexed in one shot.
 
-  ``starts``/``lengths`` delimit each clip inside the concatenated tensors, so a
-  single ``(motion_id, frame)`` pair indexes the whole library.
+  The full library is read once at startup into concatenated host arrays.
+  ``gather`` copies only the rows for the current ``(motion id, frame)`` pairs
+  to the training device, so a reset does not open clip files again.
   """
 
   def __init__(
@@ -83,104 +87,187 @@ class SourceMotionLoader:
     quaternion_order: str = "wxyz",
     motion_weights: dict[str, float] | None = None,
     clamp_feet: bool = True,
+    cache_bytes: int = 4 << 30,
   ) -> None:
+    del clamp_feet, cache_bytes  # kept so existing callers keep the same signature
     paths = _expand_motion_paths(motion_files)
-    clips = [
-      self._load(path, source_bodies, device, quaternion_order) for path in paths
-    ]
-    fps_set = {clip["fps"] for clip in clips if clip["fps"] is not None}
-    if len(fps_set) > 1:
-      raise ValueError(f"Source clips have different frame rates: {sorted(fps_set)}")
-    self.fps = next(iter(fps_set)) if fps_set else None
+    self.paths = tuple(paths)
     self.names = tuple(Path(p).stem for p in paths)
     if len(set(self.names)) != len(self.names):
       raise ValueError("Source motion names must be unique")
-    self.fingerprints = tuple(c["fingerprint"] for c in clips)
-    self.num_motions = len(clips)
-    self.lengths = torch.tensor(
-      [c["pos"].shape[0] for c in clips], dtype=torch.long, device=device
-    )
-    self.starts = torch.zeros(self.num_motions, dtype=torch.long, device=device)
-    if self.num_motions > 1:
-      self.starts[1:] = torch.cumsum(self.lengths[:-1], dim=0)
-    self.pos = torch.cat([c["pos"] for c in clips])
-    self.quat = torch.cat([c["quat"] for c in clips])
-    self.lin_vel = torch.cat([c["lin_vel"] for c in clips])
-    self.ang_vel = torch.cat([c["ang_vel"] for c in clips])
-    self.z_nom = torch.tensor(
-      [c["z_nom"] for c in clips], dtype=torch.float32, device=device
-    )
-    # Nominal calibration constants come from the clip metadata; every clip of
-    # the same skeleton carries the same values.
-    first = clips[0]
-    self.nominal_pos = torch.as_tensor(first["nominal_pos"], device=device)
-    self.nominal_quat = torch.as_tensor(first["nominal_quat"], device=device)
-    self.source_height = float(first["root_height"])
-    self.source_yaw = first["source_yaw"]
-    for clip in clips[1:]:
-      if not (np.allclose(clip["nominal_pos"], first["nominal_pos"]) and
-              np.allclose(clip["nominal_quat"], first["nominal_quat"]) and
-              clip["source_yaw"] == self.source_yaw):
-        raise ValueError("Source clips use inconsistent nominal calibrations")
+    self.num_motions = len(paths)
+    self.source_bodies = tuple(source_bodies)
+    self.quaternion_order = quaternion_order
+    self.device = torch.device(device)
+    if self.num_motions > 1000:
+      print(f"[INFO] Indexing {self.num_motions} source clips")
+
+    lengths: list[int] = []
+    z_noms: list[float] = []
+    fps_values: list[float] = []
+    nominal_pos = nominal_quat = None
+    source_height = source_yaw = None
+    for path in paths:
+      meta = self._read_meta(path, self.source_bodies, quaternion_order)
+      if meta["fps"] is not None:
+        fps_values.append(meta["fps"])
+      if nominal_pos is None:
+        nominal_pos = meta["nominal_pos"]
+        nominal_quat = meta["nominal_quat"]
+        source_height = meta["root_height"]
+        source_yaw = meta["source_yaw"]
+      elif not (np.allclose(meta["nominal_pos"], nominal_pos) and
+                np.allclose(meta["nominal_quat"], nominal_quat) and
+                meta["source_yaw"] == source_yaw):
+        raise ValueError(f"Source clips use inconsistent nominal calibrations: {path}")
+      lengths.append(meta["length"])
+      z_noms.append(meta["z_nom"])
+    fps_set = set(fps_values)
+    if len(fps_set) > 1:
+      raise ValueError(f"Source clips have different frame rates: {sorted(fps_set)}")
+    self.fps = next(iter(fps_set)) if fps_set else None
+    self.lengths = torch.tensor(lengths, dtype=torch.long, device=self.device)
+    self.z_nom = torch.tensor(z_noms, dtype=torch.float32, device=self.device)
+    self.nominal_pos = torch.as_tensor(nominal_pos, device=self.device)
+    self.nominal_quat = torch.as_tensor(nominal_quat, device=self.device)
+    self.source_height = float(source_height)
+    self.source_yaw = source_yaw
     self.time_step_total = int(self.lengths.max())
+    self._fingerprints: list[str | None] = [None] * self.num_motions
+    self._load_library(lengths)
 
     weights = torch.tensor(
       [(motion_weights or {}).get(name, 1.0) for name in self.names],
       dtype=torch.float32,
-      device=device,
+      device=self.device,
     )
     if torch.any(weights < 0) or float(weights.sum()) <= 0:
       raise ValueError(f"motion_weights must be non-negative and sum > 0: {weights}")
     self.sample_prob = weights / weights.sum()
 
+  def _load_library(self, lengths: list[int]) -> None:
+    """Read every clip into concatenated host arrays addressed by ``starts``."""
+    bodies = len(self.source_bodies)
+    total = int(sum(lengths))
+    starts = np.zeros(self.num_motions, dtype=np.int64)
+    if self.num_motions > 1:
+      starts[1:] = np.cumsum(lengths[:-1], dtype=np.int64)
+    pos = np.empty((total, bodies, 3), dtype=np.float32)
+    quat = np.empty((total, bodies, 4), dtype=np.float32)
+    lin_vel = np.empty((total, bodies, 3), dtype=np.float32)
+    ang_vel = np.empty((total, bodies, 3), dtype=np.float32)
+    paths = self.paths
+    source_bodies = self.source_bodies
+    quaternion_order = self.quaternion_order
+
+    def fill(motion_id: int) -> None:
+      arrays = SourceMotionLoader._arrays(paths[motion_id], source_bodies, quaternion_order)
+      start = int(starts[motion_id])
+      stop = start + int(lengths[motion_id])
+      if arrays["pos"].shape[0] != lengths[motion_id]:
+        raise ValueError(f"Frame count changed while loading {paths[motion_id]}")
+      pos[start:stop] = arrays["pos"]
+      quat[start:stop] = arrays["quat"]
+      lin_vel[start:stop] = arrays["lin_vel"]
+      ang_vel[start:stop] = arrays["ang_vel"]
+
+    workers = min(8, os.cpu_count() or 1)
+    if self.num_motions > 1000:
+      print(f"[INFO] Loading {self.num_motions} clips into host memory ({total} frames)")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+      tuple(pool.map(fill, range(self.num_motions), chunksize=8))
+    self.starts = torch.from_numpy(starts)
+    self._pos = torch.from_numpy(pos)
+    self._quat = torch.from_numpy(quat)
+    self._lin_vel = torch.from_numpy(lin_vel)
+    self._ang_vel = torch.from_numpy(ang_vel)
+
+  @property
+  def fingerprints(self) -> tuple[str, ...]:
+    """Content hashes taken from the resident host arrays."""
+    for index, fingerprint in enumerate(self._fingerprints):
+      if fingerprint is None:
+        start = int(self.starts[index])
+        stop = start + int(self.lengths[index])
+        digest = hashlib.sha256(self._pos[start:stop].numpy())
+        digest.update(self._quat[start:stop].numpy())
+        self._fingerprints[index] = digest.hexdigest()
+    return tuple(self._fingerprints)  # type: ignore[arg-type]
+
   @staticmethod
-  def _load(
-    path: str,
-    source_bodies: tuple[str, ...],
-    device: str | torch.device,
-    quaternion_order: str,
-  ) -> dict:
-    data = np.load(path)
+  def _array_shape(zf: zipfile.ZipFile, key: str) -> tuple[int, ...]:
+    with zf.open(f"{key}.npy") as raw:
+      major, minor = np.lib.format.read_magic(raw)
+      if (major, minor) == (1, 0):
+        shape, _, _ = np.lib.format.read_array_header_1_0(raw)
+      else:
+        shape, _, _ = np.lib.format.read_array_header_2_0(raw)
+      return tuple(int(dim) for dim in shape)
+
+  @classmethod
+  def _read_meta(cls, path: str, source_bodies: tuple[str, ...], quaternion_order: str) -> dict:
+    with zipfile.ZipFile(path) as archive:
+      length = cls._array_shape(archive, "body_pos_w")[0]
+    with np.load(path) as data:
+      order, idx = cls._body_index(data, path, source_bodies, quaternion_order)
+      perm = list(_QUAT_TO_WXYZ[order])
+      fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data.files else None
+      return {
+        "length": length,
+        "fps": fps,
+        "source_yaw": float(data["source_yaw"]) if "source_yaw" in data.files else None,
+        "z_nom": float(np.asarray(data["z_nom"]).reshape(-1)[0]),
+        "nominal_pos": np.asarray(data["nominal_pos"], dtype=np.float32)[idx],
+        "nominal_quat": np.asarray(data["nominal_quat"], dtype=np.float32)[idx][..., perm],
+        "root_height": float(np.asarray(data["root_height"]).reshape(-1)[0]),
+      }
+
+  @staticmethod
+  def _body_index(data: np.lib.npyio.NpzFile, path: str, source_bodies: tuple[str, ...], quaternion_order: str):
     order = quaternion_order
     if "quaternion_order" in data.files:
       order = str(np.asarray(data["quaternion_order"]).item())
     if order not in _QUAT_TO_WXYZ:
       raise ValueError(f"Unsupported quaternion order {order!r} in {path}")
-
-    src_names = [str(n) for n in data["body_names"]]
+    src_names = [str(name) for name in data["body_names"]]
     missing = sorted(set(source_bodies) - set(src_names))
     if missing:
       raise ValueError(f"{path} is missing source bodies {missing}")
-    idx = [src_names.index(name) for name in source_bodies]
+    return order, [src_names.index(name) for name in source_bodies]
 
-    def load(key: str) -> torch.Tensor:
-      return torch.as_tensor(data[key], dtype=torch.float32, device=device)
+  @classmethod
+  def _arrays(cls, path: str, source_bodies: tuple[str, ...], quaternion_order: str) -> dict[str, np.ndarray]:
+    with np.load(path) as data:
+      order, idx = cls._body_index(data, path, source_bodies, quaternion_order)
+      perm = list(_QUAT_TO_WXYZ[order])
+      pos = np.ascontiguousarray(data["body_pos_w"][:, idx], dtype=np.float32)
+      quat = np.ascontiguousarray(data["body_quat_w"][:, idx][..., perm], dtype=np.float32)
+      return {
+        "pos": pos,
+        "quat": quat,
+        "lin_vel": np.ascontiguousarray(data["body_lin_vel_w"][:, idx], dtype=np.float32),
+        "ang_vel": np.ascontiguousarray(data["body_ang_vel_w"][:, idx], dtype=np.float32),
+      }
 
-    # A renamed clip retains its learned floor correction. Two different
-    # performances with the same basename must never share that correction.
-    pos = np.ascontiguousarray(data["body_pos_w"][:, idx], dtype=np.float32)
-    quat = np.ascontiguousarray(data["body_quat_w"][:, idx][..., list(_QUAT_TO_WXYZ[order])], dtype=np.float32)
-    digest = hashlib.sha256(pos)
-    digest.update(quat)
-    fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data.files else None
-    return {
-      "fps": fps,
-      "source_yaw": float(data["source_yaw"]) if "source_yaw" in data else None,
-      "fingerprint": digest.hexdigest(),
-      "pos": torch.as_tensor(pos, device=device),
-      "quat": torch.as_tensor(quat, device=device),
-      "lin_vel": load("body_lin_vel_w")[:, idx],
-      "ang_vel": load("body_ang_vel_w")[:, idx],
-      "z_nom": float(np.asarray(data["z_nom"]).reshape(-1)[0]),
-      "nominal_pos": np.asarray(data["nominal_pos"], dtype=np.float32)[idx],
-      "nominal_quat": np.asarray(data["nominal_quat"], dtype=np.float32)[idx][
-        ..., list(_QUAT_TO_WXYZ[order])
-      ],
-      "root_height": float(np.asarray(data["root_height"]).reshape(-1)[0]),
-    }
-
-  def frame_index(self, motion_ids: torch.Tensor, frames: torch.Tensor) -> torch.Tensor:
-    return self.starts[motion_ids] + frames
+  def gather(self, motion_ids: torch.Tensor, frames: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Copy the requested frames to the training device in one index."""
+    count = int(motion_ids.numel())
+    bodies = len(self.source_bodies)
+    if count == 0:
+      return (
+        torch.empty(0, bodies, 3, device=self.device),
+        torch.empty(0, bodies, 4, device=self.device),
+        torch.empty(0, bodies, 3, device=self.device),
+        torch.empty(0, bodies, 3, device=self.device),
+      )
+    index = self.starts[motion_ids.detach().to(dtype=torch.long, device="cpu")]
+    index = index + frames.detach().to(dtype=torch.long, device="cpu")
+    return (
+      self._pos[index].to(self.device, non_blocking=True),
+      self._quat[index].to(self.device, non_blocking=True),
+      self._lin_vel[index].to(self.device, non_blocking=True),
+      self._ang_vel[index].to(self.device, non_blocking=True),
+    )
 
 
 class RetargetCommand(CommandTerm):
@@ -270,13 +357,19 @@ class RetargetCommand(CommandTerm):
       "psi",
     ):
       self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
-    print(
-      "[INFO] ReActor source clips: "
-      + ", ".join(
-        f"{name} ({int(length)} frames)"
-        for name, length in zip(self.motion.names, self.motion.lengths.tolist(), strict=True)
+    if self.motion.num_motions > 12:
+      print(
+        f"[INFO] ReActor source clips: {self.motion.num_motions} motions, "
+        f"{int(self.motion.lengths.sum())} frames, resident in host memory"
       )
-    )
+    else:
+      print(
+        "[INFO] ReActor source clips: "
+        + ", ".join(
+          f"{name} ({int(length)} frames)"
+          for name, length in zip(self.motion.names, self.motion.lengths.tolist(), strict=True)
+        )
+      )
 
   def _requires_grad(self, flag: bool) -> None:
     for tensor in self.p.as_list():
@@ -286,19 +379,8 @@ class RetargetCommand(CommandTerm):
   # Reference.
   ##
 
-  def _source_slice(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
-    ids = self.motion_ids[env_ids]
-    fr = self.frames[env_ids]
-    return self.motion.frame_index(ids, fr)
-
   def _source_frames(self, env_ids: torch.Tensor | slice) -> tuple[torch.Tensor, ...]:
-    index = self._source_slice(env_ids)
-    return (
-      self.motion.pos[index],
-      self.motion.quat[index],
-      self.motion.lin_vel[index],
-      self.motion.ang_vel[index],
-    )
+    return self.motion.gather(self.motion_ids[env_ids], self.frames[env_ids])
 
   def reference(self, env_ids: torch.Tensor | slice = slice(None)) -> RetargetedState:
     """Parameterized reference ``g_t`` for the current frame of every env."""
@@ -541,13 +623,13 @@ class RetargetCommand(CommandTerm):
   def _reference_for(
     self, motion_ids: torch.Tensor, frames: torch.Tensor, z_nom: torch.Tensor
   ) -> RetargetedState:
-    index = self.motion.frame_index(motion_ids, frames)
+    pos, quat, lin_vel, ang_vel = self.motion.gather(motion_ids, frames)
     return self.mapping(
       self.p,
-      self.motion.pos[index],
-      self.motion.quat[index],
-      self.motion.lin_vel[index],
-      self.motion.ang_vel[index],
+      pos,
+      quat,
+      lin_vel,
+      ang_vel,
       z_nom * self.calibration.scale + self.p.p_z[motion_ids],
       torch.ones_like(z_nom),
     )

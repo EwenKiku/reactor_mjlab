@@ -1,0 +1,17 @@
+# Converted motion library and training outputs
+src/assets/bones_seed_motions/
+logs/
+wandb/
+onnx/
+videos/
+artifacts/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# MuJoCo writes this next to the process working directory
+MUJOCO_LOG.TXT

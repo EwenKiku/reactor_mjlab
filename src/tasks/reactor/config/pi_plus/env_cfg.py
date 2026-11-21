@@ -52,7 +52,7 @@ from src.tasks.reactor.mdp.commands import RetargetCommandCfg
 
 # config/pi_plus/<file> -> repo root is five levels up.
 _REPO_ROOT = Path(__file__).resolve().parents[5]
-MOTION_DIR = _REPO_ROOT / "src" / "assets" / "motions" / "reactor" / "bones_seed" / "train"
+MOTION_DIR = _REPO_ROOT / "src" / "assets" / "bones_seed_motions" / "train"
 PI_PLUS_XML = _REPO_ROOT / "src" / "assets" / "robots" / "pi_plus" / "xmls" / "pi_plus.xml"
 
 #: Bodies whose reference targets the policy cannot reach honestly; they get the

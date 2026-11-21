@@ -19,7 +19,7 @@ python -m tools.export_reactor_retarget \
 ```bash
 python -m tools.export_reactor_retarget \
   --checkpoint checkpoints/pi_plus_boneseed_base.pt \
-  --src /home/kiku/DATA/RL/ASSETS/bones-seed/soma_uniform.tar.gz \
+  --src /home/kiku/data/RL/ASSETS/bones-seed/soma_uniform.tar.gz \
   --limit 1 --dst outputs/archive_example
 ```
 
@@ -95,7 +95,7 @@ python -m tools.compare_source_motion --bvh /path/to/motion.bvh \
 
 ```bash
 python -m tools.prepare_bones_seed \
-  --dataset /home/kiku/DATA/RL/ASSETS/bones-seed \
+  --dataset /home/kiku/data/RL/ASSETS/bones-seed \
   --dst /tmp/pi_plus_bones_seed
 ```
 

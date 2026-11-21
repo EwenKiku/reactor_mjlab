@@ -27,7 +27,7 @@ def paired_bvh(npz: Path) -> Path:
   if manifest.is_file():
     for row in json.loads(manifest.read_text())["clips"]:
       if row["file"] == npz.name and "source" in row:
-        for base in (npz.parent, REPO, REPO / ".tmp/soma_raw", Path("/home/kiku/DATA/RL/ASSETS/bones-seed")):
+        for base in (npz.parent, REPO, REPO / ".tmp/soma_raw", Path("/home/kiku/data/RL/ASSETS/bones-seed")):
           path = base / row["source"]
           if path.is_file():
             return path

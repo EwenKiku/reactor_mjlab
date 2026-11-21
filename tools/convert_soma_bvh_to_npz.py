@@ -72,17 +72,19 @@ SOURCE_BODIES: tuple[str, ...] = (
 
 FOOT_BODIES: tuple[str, ...] = ("LeftFoot", "RightFoot")
 ROOT_BODY = "Hips"
-UNIFORM_RIG = _REPO_ROOT / "src/assets/motions/reactor/soma_base_skel_minimal.bvh"
+_VENDORED_RIG = _REPO_ROOT / "src/assets/motions/reactor/soma_base_skel_minimal.bvh"
+_DATASET_RIG = Path("/home/kiku/data/RL/ASSETS/bones-seed/soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh")
+UNIFORM_RIG = _VENDORED_RIG if _VENDORED_RIG.is_file() else _DATASET_RIG
 
 
 @lru_cache(maxsize=1)
-def uniform_skeleton() -> BvhClip:
-  return parse_bvh(UNIFORM_RIG)
+def uniform_skeleton(rig: Path | None = None) -> BvhClip:
+  return parse_bvh(rig or UNIFORM_RIG)
 
 
-def normalize_proportions(clip: BvhClip) -> None:
+def normalize_proportions(clip: BvhClip, rig: BvhClip | None = None) -> None:
   """Express a proportional SOMA performance on the training skeleton."""
-  rig = uniform_skeleton()
+  rig = rig or uniform_skeleton()
   if [(j.name, j.parent) for j in clip.joints] != [(j.name, j.parent) for j in rig.joints]:
     raise ValueError("Expected the BONES-SEED SOMA BVH hierarchy")
   # In uniform files a few auxiliary offsets may vary slightly. The limb
@@ -151,10 +153,11 @@ def convert_clip(
   nominal_quat: np.ndarray,
   root_height: float,
   yaw: float = 0.0,
+  rig: BvhClip | None = None,
 ) -> dict[str, np.ndarray]:
   names = list(SOURCE_BODIES)
   clip = parse_bvh(path)
-  normalize_proportions(clip)
+  normalize_proportions(clip, rig)
   if not np.isfinite(out_fps) or out_fps <= 0:
     raise ValueError("Output frame rate must be finite and positive")
   rot, pos = forward_kinematics(clip)
