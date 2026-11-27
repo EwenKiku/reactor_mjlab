@@ -13,9 +13,10 @@ import json
 import os
 import sys
 import tarfile
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from itertools import islice
 from shutil import copyfileobj
-from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -32,8 +33,14 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.utils.lab_api.math import quat_apply_inverse, quat_error_magnitude
 
 from src.assets.robots.pi_plus.pi_plus_constants import PI_PLUS_XML
-from src.tasks.reactor.config.pi_plus.env_cfg import MOTION_DIR, pi_plus_reactor_env_cfg
+from src.assets.robots.rp1.rp1_constants import RP1_24DOF_XML
+from src.tasks.reactor.config.pi_plus.env_cfg import CALIBRATION as PI_PLUS_CALIBRATION
+from src.tasks.reactor.config.pi_plus.env_cfg import pi_plus_reactor_env_cfg
 from src.tasks.reactor.config.pi_plus.rl_cfg import pi_plus_reactor_runner_cfg
+from src.tasks.reactor.config.reactor_env import MOTION_DIR
+from src.tasks.reactor.config.rp1.env_cfg import CALIBRATION as RP1_CALIBRATION
+from src.tasks.reactor.config.rp1.env_cfg import rp1_reactor_env_cfg
+from src.tasks.reactor.config.rp1.rl_cfg import rp1_reactor_runner_cfg
 from src.tasks.reactor.rl.runner import ReactorOnPolicyRunner
 from tools.convert_soma_bvh_to_npz import SOURCE_BODIES, convert_clip
 from tools.replay_npz import _add_floor, apply_frame, load_clip, load_robot_spec
@@ -49,6 +56,49 @@ _HUMAN_BONES = (
   ("Hips", "RightLeg"), ("RightLeg", "RightShin"), ("RightShin", "RightFoot"),
 )
 _HUMAN_COLOR = np.array([0.12, 0.72, 0.78, 1.0], dtype=np.float32)
+
+
+@dataclass(frozen=True)
+class RobotExport:
+  """One trained robot: play environment, runner hyperparameters, and MJCF."""
+
+  name: str
+  xml: Path
+  env_cfg: Callable
+  runner_cfg: Callable
+  target_bodies: tuple[str, ...]
+
+
+ROBOTS: dict[str, RobotExport] = {
+  "pi_plus": RobotExport(
+    "pi_plus",
+    PI_PLUS_XML,
+    pi_plus_reactor_env_cfg,
+    pi_plus_reactor_runner_cfg,
+    PI_PLUS_CALIBRATION.target_bodies,
+  ),
+  "rp1": RobotExport(
+    "rp1",
+    RP1_24DOF_XML,
+    rp1_reactor_env_cfg,
+    rp1_reactor_runner_cfg,
+    RP1_CALIBRATION.target_bodies,
+  ),
+}
+
+
+def select_robot(name: str | None, state: dict) -> RobotExport:
+  """Use ``--robot`` when given, otherwise the checkpoint's trained body list."""
+  if name is not None:
+    if name not in ROBOTS:
+      raise ValueError(f"Unknown robot {name!r}. Choices: {', '.join(ROBOTS)}")
+    return ROBOTS[name]
+  trained = tuple(state.get("retarget/target_bodies") or ())
+  matches = [robot for robot in ROBOTS.values() if robot.target_bodies == trained]
+  if len(matches) == 1:
+    return matches[0]
+  choices = ", ".join(ROBOTS)
+  raise ValueError(f"Pass --robot {{{choices}}}. The checkpoint does not identify one robot.")
 
 
 def source_files(src: Path, only: str, limit: int) -> list[Path]:
@@ -178,7 +228,7 @@ def _follow(camera, root: np.ndarray, distance: float, height: float) -> None:
   camera.elevation = -18.0
 
 
-def render_comparison(source_pos: np.ndarray, robot_path: Path, out: Path) -> None:
+def render_comparison(source_pos: np.ndarray, robot_path: Path, out: Path, xml: Path) -> None:
   """Write a side-by-side MuJoCo video of one exported clip."""
   import imageio.v2 as imageio
   import mujoco
@@ -192,7 +242,7 @@ def render_comparison(source_pos: np.ndarray, robot_path: Path, out: Path) -> No
   human_data = mujoco.MjData(human_model)
   mujoco.mj_forward(human_model, human_data)
 
-  robot_spec = load_robot_spec(str(PI_PLUS_XML))
+  robot_spec = load_robot_spec(str(xml))
   _add_floor(robot_spec)
   robot_spec.visual.global_.offwidth = 640
   robot_spec.visual.global_.offheight = 540
@@ -230,8 +280,8 @@ def render_comparison(source_pos: np.ndarray, robot_path: Path, out: Path) -> No
 
 
 @torch.inference_mode()
-def rollout(paths, checkpoint, dst, device, seed, video: bool):
-  cfg = pi_plus_reactor_env_cfg(play=True)
+def rollout(paths, checkpoint, dst, device, seed, video: bool, robot: RobotExport):
+  cfg = robot.env_cfg(play=True)
   cfg.seed = seed
   cfg.scene.num_envs = len(paths)
   cfg.events = {}
@@ -241,7 +291,7 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool):
   motion.motion_files = tuple(paths)
   motion.collect_upper = False
   motion.sampling_mode = "start"
-  agent_cfg = pi_plus_reactor_runner_cfg()
+  agent_cfg = robot.runner_cfg()
   env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device=device), clip_actions=agent_cfg.clip_actions)
   try:
     runner = ReactorOnPolicyRunner(env, asdict(agent_cfg), device=device)
@@ -260,7 +310,7 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool):
       if video:
         source = cmd._source_frames(slice(None))[0]
       obs, *_ = env.step(policy(obs))
-      robot = cmd.robot
+      entity = cmd.robot
       pos = cmd.robot_body_pos_w - env.unwrapped.scene.env_origins[:, None]
       quat = cmd.robot_body_quat_w
       positions = (pos - ref.pos).norm(dim=-1)
@@ -270,7 +320,7 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool):
       limb_error = (local[:, 1:] - local_target[:, 1:]).norm(dim=-1).mean(1)
       wrench = env.unwrapped.action_manager.get_term("wrench").applied_wrench
       step = {
-        "joint_pos": robot.data.joint_pos, "joint_vel": robot.data.joint_vel,
+        "joint_pos": entity.data.joint_pos, "joint_vel": entity.data.joint_vel,
         "body_pos_w": pos, "body_quat_w": quat,
         "body_lin_vel_w": cmd.robot_body_lin_vel_w, "body_ang_vel_w": cmd.robot_body_ang_vel_w,
         "metrics": torch.stack([positions[:, 0], angles[:, 0], positions.mean(1),
@@ -296,12 +346,12 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool):
       directory.mkdir(parents=True, exist_ok=True)
       out = directory / f"{name}.npz"
       np.savez_compressed(out, fps=np.array([cmd.motion.fps], np.float32),
-                          joint_names=robot.joint_names, body_names=cmd.cfg.target_bodies,
+                          joint_names=entity.joint_names, body_names=cmd.cfg.target_bodies,
                           quaternion_order="wxyz", anchor_body=cmd.cfg.target_bodies[0], **data)
       video_path = None
       if video:
         video_path = dst / "videos" / f"{name}.mp4"
-        render_comparison(buffers["source_pos"][:length, i], out, video_path)
+        render_comparison(buffers["source_pos"][:length, i], out, video_path, robot.xml)
       row = dict(file=str(out.relative_to(dst)), frames=length, success=not failures.size,
                  video=None if video_path is None else str(video_path.relative_to(dst)),
                  first_failed_frame=int(failures[0]) if failures.size else None,
@@ -318,6 +368,11 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool):
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--checkpoint", type=Path, required=True)
+  parser.add_argument(
+    "--robot",
+    choices=tuple(ROBOTS),
+    help="Robot to roll out. Default: the body list stored in the checkpoint.",
+  )
   parser.add_argument("--src", type=Path, default=MOTION_DIR, help="BVH, source NPZ, directory, or SOMA tar.gz archive")
   parser.add_argument("--dst", type=Path, required=True)
   parser.add_argument("--batch-size", type=int, default=8)
@@ -335,6 +390,11 @@ def main():
   state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)["infos"]["reactor"]
   if state.get("version") != 2 or state["source_preprocessing"]["yaw"] is None:
     parser.error("Use a motion-conditioned checkpoint trained with the BONES-SEED uniform calibration")
+  try:
+    robot = select_robot(args.robot, state)
+  except ValueError as exc:
+    parser.error(str(exc))
+  print(f"Export robot: {robot.name}")
   if args.dst.exists() and any(args.dst.iterdir()) and not args.resume:
     parser.error("Choose an empty output directory to keep successful and failed runs distinct")
   args.dst.mkdir(parents=True, exist_ok=True)
@@ -354,10 +414,13 @@ def main():
     with TemporaryDirectory() as tmp:
       batch = prepare(paths, Path(tmp), state["source_preprocessing"])
       summary += rollout(
-        batch, args.checkpoint, args.dst, args.device, args.seed, video=not args.no_video
+        batch, args.checkpoint, args.dst, args.device, args.seed,
+        video=not args.no_video, robot=robot,
       )
     done.update(Path(row["file"]).name for row in summary)
-    report = dict(checkpoint=str(args.checkpoint.resolve()), seed=args.seed, clips=summary)
+    report = dict(
+      checkpoint=str(args.checkpoint.resolve()), robot=robot.name, seed=args.seed, clips=summary,
+    )
     report_path.write_text(json.dumps(report, indent=2) + "\n")
     gc.collect()
     if torch.cuda.is_available():
