@@ -101,23 +101,29 @@ class NominalCalibration:
     source_pos: np.ndarray,
     source_quat: np.ndarray,
     target_pos: np.ndarray,
-    target_quat: np.ndarray,
+    npz_to_robot: np.ndarray,
     source_height: float,
     target_height: float,
   ) -> NominalCalibration:
-    """Calibrate from matched nominal frames.
+    """Calibrate positions from the nominal poses and orientations from ``npz_to_robot``.
 
-    All arrays are ordered like the correspondence list, in ``wxyz``.
+    ``npz_to_robot`` is ``(B, 3, 3)`` with ``v_robot = R @ v_npz``. The stored
+    ``R_nom`` is its transpose, so ``R_robot = R_source @ R_nom`` still holds.
+    Quaternions are ``wxyz``.
     """
     scale = float(target_height / max(source_height, 1.0e-6))
     from mjlab.utils.lab_api.math import matrix_from_quat as _m
 
+    rotation = np.asarray(npz_to_robot, dtype=np.float64)
+    if rotation.shape != (source_pos.shape[0], 3, 3):
+      raise ValueError(
+        f"npz_to_robot shape {rotation.shape} does not match {source_pos.shape[0]} bodies"
+      )
     r_source = _m(torch.as_tensor(source_quat, dtype=torch.float64)).numpy()
-    r_target = _m(torch.as_tensor(target_quat, dtype=torch.float64)).numpy()
     x_nom = np.einsum(
       "bij,bj->bi", np.transpose(r_source, (0, 2, 1)), target_pos - scale * source_pos
     )
-    r_nom = np.einsum("bji,bjk->bik", r_source, r_target)
+    r_nom = np.transpose(rotation, (0, 2, 1))
     return cls(
       scale=scale,
       x_nom=x_nom,

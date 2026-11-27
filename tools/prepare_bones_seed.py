@@ -73,7 +73,7 @@ def prepare(dataset: Path, dst: Path, extracted: Path | None):
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--dataset", type=Path, default=Path("/home/kiku/data/RL/ASSETS/bones-seed"))
+  parser.add_argument("--dataset", type=Path, default=Path("../../ASSETS/bones-seed"))
   parser.add_argument("--dst", type=Path, default=DEFAULT_DST)
   parser.add_argument("--extracted", type=Path, help="Optional cache containing soma_uniform/bvh")
   args = parser.parse_args()

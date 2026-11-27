@@ -73,7 +73,7 @@ SOURCE_BODIES: tuple[str, ...] = (
 FOOT_BODIES: tuple[str, ...] = ("LeftFoot", "RightFoot")
 ROOT_BODY = "Hips"
 _VENDORED_RIG = _REPO_ROOT / "src/assets/motions/reactor/soma_base_skel_minimal.bvh"
-_DATASET_RIG = Path("/home/kiku/data/RL/ASSETS/bones-seed/soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh")
+_DATASET_RIG = _REPO_ROOT / "src/assets/soma_base_rig/soma_base_skel_minimal.bvh"
 UNIFORM_RIG = _VENDORED_RIG if _VENDORED_RIG.is_file() else _DATASET_RIG
 
 

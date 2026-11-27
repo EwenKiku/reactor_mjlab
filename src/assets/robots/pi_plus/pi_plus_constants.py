@@ -1,80 +1,15 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import mujoco
 
 from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.utils.spec_config import CollisionCfg
   
 PI_PLUS_DIR = Path(__file__).resolve().parent
 PI_PLUS_XML = PI_PLUS_DIR / "xmls" / "pi_plus.xml"
 
-
-PI_PLUS_JOINT_ORDER: tuple[str, ...] = (
-  "l_hip_pitch_joint",
-  "l_shoulder_pitch_joint",
-  "r_hip_pitch_joint",
-  "r_shoulder_pitch_joint",
-  "l_hip_roll_joint",
-  "l_shoulder_roll_joint",
-  "r_hip_roll_joint",
-  "r_shoulder_roll_joint",
-  "l_thigh_joint",
-  "l_upper_arm_joint",
-  "r_thigh_joint",
-  "r_upper_arm_joint",
-  "l_calf_joint",
-  "l_elbow_joint",
-  "r_calf_joint",
-  "r_elbow_joint",
-  "l_ankle_pitch_joint",
-  "r_ankle_pitch_joint",
-  "l_ankle_roll_joint",
-  "r_ankle_roll_joint",
-)
-
-PI_PLUS_FEET_BODIES: tuple[str, str] = ("l_ankle_roll_link", "r_ankle_roll_link")
-
-# Rated (continuous) velocity and effort per joint, in *model* joint order.
-# Every joint of the MJCF is covered: ``PI_PLUS_JOINT_ORDER`` plus the two head
-# joints, which the policy does not actuate but the regularizers still see.
-PI_PLUS_ALL_JOINTS: tuple[str, ...] = (
-  *PI_PLUS_JOINT_ORDER,
-  "head_yaw_joint",
-  "head_pitch_joint",
-)
-
-
-def _rated_effort(name: str) -> float:
-  if "hip" in name or "thigh" in name or "calf" in name:
-    return 30.0
-  if "ankle" in name:
-    return 20.0
-  if "head" in name:
-    return 10.0
-  return 20.0
-
-
-def _model_joint_order() -> tuple[str, ...]:
-  """Hinge joint names in MJCF order (the order ``data.joint_vel`` uses)."""
-  spec = mujoco.MjSpec.from_file(str(PI_PLUS_XML))
-  names: list[str] = []
-  for joint in spec.joints:
-    if joint.type == mujoco.mjtJoint.mjJNT_HINGE:
-      names.append(joint.name)
-  return tuple(names)
-
-
-PI_PLUS_MODEL_JOINTS: tuple[str, ...] = _model_joint_order()
-PI_PLUS_RATED_EFFORT: tuple[float, ...] = tuple(
-  _rated_effort(name) for name in PI_PLUS_MODEL_JOINTS
-)
-PI_PLUS_RATED_VELOCITY: tuple[float, ...] = tuple(
-  17.0 for _ in PI_PLUS_MODEL_JOINTS
-)
 PI_PLUS_FOOT_SCAN_SITES: tuple[str, str] = ("l_foot_scan", "r_foot_scan")
 PI_PLUS_FOOT_GEOM_EXPR = r"^(l|r)_(toe|heel)_.*$"
 

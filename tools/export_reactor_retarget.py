@@ -11,12 +11,17 @@ import argparse
 import gc
 import json
 import os
+import sys
 import tarfile
 from itertools import islice
 from shutil import copyfileobj
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+  sys.path.insert(0, str(_REPO_ROOT))
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -27,11 +32,10 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.utils.lab_api.math import quat_apply_inverse, quat_error_magnitude
 
 from src.assets.robots.pi_plus.pi_plus_constants import PI_PLUS_XML
-from src.tasks.reactor.correspondences import SOURCE_BODIES
 from src.tasks.reactor.config.pi_plus.env_cfg import MOTION_DIR, pi_plus_reactor_env_cfg
 from src.tasks.reactor.config.pi_plus.rl_cfg import pi_plus_reactor_runner_cfg
 from src.tasks.reactor.rl.runner import ReactorOnPolicyRunner
-from tools.convert_soma_bvh_to_npz import convert_clip
+from tools.convert_soma_bvh_to_npz import SOURCE_BODIES, convert_clip
 from tools.replay_npz import _add_floor, apply_frame, load_clip, load_robot_spec
 
 # Sparse SOMA bones among the 17 tracked bodies, parent then child.

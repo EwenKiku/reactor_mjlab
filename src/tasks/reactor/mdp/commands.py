@@ -293,14 +293,14 @@ class RetargetCommand(CommandTerm):
         f"{control_fps} Hz; resample them first."
       )
 
-    if cfg.target_nominal is None:
-      raise ValueError("RetargetCommandCfg.target_nominal must be provided.")
-    target_pos, target_quat, target_height = cfg.target_nominal(env)
+    if cfg.target_nominal is None or cfg.npz_to_robot is None:
+      raise ValueError("RetargetCommandCfg requires target_nominal and npz_to_robot.")
+    target_pos, target_height = cfg.target_nominal(env)
     self.calibration = NominalCalibration.build(
       source_pos=self.motion.nominal_pos.cpu().numpy().astype(np.float64),
       source_quat=self.motion.nominal_quat.cpu().numpy().astype(np.float64),
       target_pos=target_pos,
-      target_quat=target_quat,
+      npz_to_robot=np.asarray(cfg.npz_to_robot, dtype=np.float64),
       source_height=self.motion.source_height,
       target_height=target_height,
     )
@@ -320,11 +320,14 @@ class RetargetCommand(CommandTerm):
     ).detach()
     self._requires_grad(False)
 
-    self.body_indexes = torch.tensor(
-      self.robot.find_bodies(cfg.target_bodies, preserve_order=True)[0],
-      dtype=torch.long,
-      device=self.device,
-    )
+    # Resolve one name at a time so two source bodies may share a robot link.
+    body_ids = []
+    for name in cfg.target_bodies:
+      found, matched = self.robot.find_bodies(name)
+      if len(found) != 1:
+        raise ValueError(f"Expected one body for {name!r}, found {matched}")
+      body_ids.append(int(found[0]))
+    self.body_indexes = torch.tensor(body_ids, dtype=torch.long, device=self.device)
     self.failed_count = torch.zeros(self.motion.num_motions, device=self.device)
     self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self.frames = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -728,10 +731,10 @@ class RetargetCommandCfg(CommandTermCfg):
   target_bodies: tuple[str, ...] = ()
   quaternion_order: str = "wxyz"
   motion_weights: dict[str, float] = field(default_factory=dict)
-  #: Builds (positions, quaternions_wxyz, standing_height) of the target bodies
-  #: in the robot's nominal configuration.  A callable keeps this module free of
-  #: a hard dependency on a specific robot.
-  target_nominal: Callable[[ManagerBasedRlEnv], tuple[np.ndarray, np.ndarray, float]] | None = None
+  #: ``(B, 3, 3)`` rotations from each NPZ body frame into the robot link frame.
+  npz_to_robot: np.ndarray | None = None
+  #: Builds ``(positions, standing_height)`` of the target bodies in the nominal pose.
+  target_nominal: Callable[[ManagerBasedRlEnv], tuple[np.ndarray, float]] | None = None
   #: Retargeting phase ramp; the reference is frozen while ``psi`` ramps up.
   #: Kept short (10 control steps) so the upper-level buffer is not starved by
   #: early terminations, which are frequent while the policy is still random.

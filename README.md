@@ -19,7 +19,7 @@ python -m tools.export_reactor_retarget \
 ```bash
 python -m tools.export_reactor_retarget \
   --checkpoint checkpoints/pi_plus_boneseed_base.pt \
-  --src /home/kiku/data/RL/ASSETS/bones-seed/soma_uniform.tar.gz \
+  --src ~/data/RL/ASSETS/bones-seed/soma_uniform.tar.gz \
   --limit 1 --dst outputs/archive_example
 ```
 
@@ -68,9 +68,9 @@ NPZ 里的位置、朝向、线速度和角速度都在这同一个世界系里�
 
 ### 换机器人时的坐标对齐
 
-BVH 到 NPZ 只处理人体。T-pose 不同的机器人不必重转这批 NPZ，开训时用两个标称姿态重算映射。一边是 NPZ 里的 SOMA 双臂平举绑定姿态，另一边是机器人摆成同一姿势后、17 个对应刚体的世界系位姿。两边根高之比是全局缩放 `scale`，每个刚体再得到局部位置差 `x_nom` 和朝向差 `R_nom`。之后每帧参考都是人体姿态乘 `scale`，再套上这组固定偏移。可学习的 `p_pos`、`p_ori`、`p_z` 只在这个结果上做小修正，位置和朝向各自限制在 0.5 m 和 0.5 rad，吃不下一整套不同的 T-pose。
+BVH 到 NPZ 只处理人体。每个机器人在自己的 `calibration.yaml` 里写 17 对刚体，以及 npz 体轴到 link 轴的旋转矩阵 `R`（`v_robot = R @ v_npz`）。位置仍用标称姿势：根高之比是全局缩放 `scale`，每个刚体再得到局部位置差 `x_nom`。朝向不再现场重算，直接使用这份矩阵。之后每帧参考都是人体姿态乘 `scale`，再套上这组固定偏移。可学习的 `p_pos`、`p_ori`、`p_z` 只在这个结果上做小修正，位置和朝向各自限制在 0.5 m 和 0.5 rad。
 
-换机器人时改对应关系，不改动作文件：`BODY_PAIRS` 把 17 个人体刚体对到新模型的 body 名；标称关节角要把机器人摆成和 SOMA 一样的双臂平举（Pi Plus 在 `NOMINAL_JOINT_POS` 里把左右 `shoulder_roll` 转到 ±90°，默认站姿已经匹配则可以留空）；同时改脚的 body 名和贴地方式，并把自由度更少的部位放进 `IGNORE_TWIST_AXIS`。人体 NPZ 已经朝向 +X，机器人标称姿态放在同一世界系，不必再转动作文件。
+换机器人时改该机器人目录下的 `calibration.yaml`，不改动作文件。`links` 写人体刚体到模型 body 的对应和旋转矩阵；`nominal_joints` 把机器人摆成和 SOMA 一样的双臂平举（左右 `shoulder_roll` 为 ±90°）；`foot_bodies` 和 `foot_geoms` 负责贴地。人体 NPZ 已经朝向 +X。关节目标使用模型默认顺序。
 
 对照每个 link 的局部轴时，在 `reactor` 环境下运行：
 
@@ -120,9 +120,9 @@ python -m scripts.train Pi-Plus-ReActor-Flat \
 | 位置 | 本仓库的实现 |
 | --- | --- |
 | `tools/soma_bvh.py`、`tools/convert_soma_bvh_to_npz.py` | 按 BVH 层级做 FK，将厘米、Y-up 转为米、Z-up。用数据集发布的固定 SOMA 姿态标定前向和侧向，逐片段重采样与估计地面高度。 |
-| `src/tasks/reactor/correspondences.py`、`mdp/retarget.py` | SOMA 与 Pi Plus 的 17 对语义刚体，地面上的 T 姿态标定，论文式 8–13 的位置、朝向及速度映射。 |
+| `config/*/calibration.yaml`、`mdp/retarget.py` | 各机器人的 17 对刚体和 npz 到 link 的旋转矩阵；位置仍由标称姿势标定，论文式 8–13 的映射。 |
 | `mdp/commands.py`、`rl/runner.py` | 用物理 rollout 的有效帧计算上层损失，通过参数化参考反传并投影更新，保存和恢复共享偏移、分片段高度、标定、策略及观测归一化。 |
-| `config/pi_plus/env_cfg.py`、`mdp/actions.py` | actor 接收 17 个目标刚体在机器人根系中的位置、6D 朝向、线/角速度，以及本体状态、历史动作和初始化相位。每步输出 20 个关节目标和 6 维辅助 wrench。 |
+| `config/pi_plus/env_cfg.py`、`config/rp1/env_cfg.py`、`mdp/actions.py` | actor 接收对应刚体在机器人根系中的位置、6D 朝向、线/角速度，以及本体状态、历史动作和初始化相位。关节目标按模型默认顺序，另加 6 维辅助 wrench。 |
 | `tools/export_reactor_retarget.py` | 在训练时使用的机器人模型和控制频率下执行确定性策略，导出物理状态。 |
 
 本次训练平台为 RTX 5080、MuJoCo Warp、1,024 并行环境 × 每轮 24 步。论文实验使用 Isaac Sim、4,096 环境、20,000 轮以及其他机器人和数据集。这里沿用双层优化、残余力控制和策略条件输入；Pi Plus 的力矩尺度、初始化扰动、训练预算和数据覆盖有单独配置。论文原文见 [ReActor](doc/ReActor:%20Reinforcement%20Learning%20for%20Physics-Aware%20Motion%20Retargeting.pdf)。
