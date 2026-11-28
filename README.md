@@ -11,18 +11,15 @@
 
 ## 效果
 
-下面是 RP1 导出的左右对照：左边是人体骨架，右边是仿真里的机器人。文件在 `doc/previews/`，不放在会被忽略的 `outputs/`。
+下面是 RP1 导出的左右对照：左边是人体骨架，右边是仿真里的机器人。动图在 `doc/previews/`，不放在会被忽略的 `outputs/`。
 
-<table>
-<tr>
-<td width="50%">走。停步转身 <code>walk_ff_stop_270_001__A072</code><br><video src="doc/previews/rp1_walk.mp4" controls muted loop playsinline width="100%"></video></td>
-<td width="50%">慢跑绕圈 <code>jog_ff_loop_360_001__A072</code><br><video src="doc/previews/rp1_jog.mp4" controls muted loop playsinline width="100%"></video></td>
-</tr>
-<tr>
-<td>前跳转身 <code>jump_ff_180_R_001__A192</code><br><video src="doc/previews/rp1_jump.mp4" controls muted loop playsinline width="100%"></video></td>
-<td>舞蹈 <code>dance_retro_jackson_jump_on_R_002__A309</code><br><video src="doc/previews/rp1_dance.mp4" controls muted loop playsinline width="100%"></video></td>
-</tr>
-</table>
+| 走。停步转身 `walk_ff_stop_270_001__A072` | 慢跑绕圈 `jog_ff_loop_360_001__A072` |
+| --- | --- |
+| ![走，停步转身](doc/previews/rp1_walk.webp) | ![慢跑绕圈](doc/previews/rp1_jog.webp) |
+
+| 前跳转身 `jump_ff_180_R_001__A192` | 舞蹈 `dance_retro_jackson_jump_on_R_002__A309` |
+| --- | --- |
+| ![前跳转身](doc/previews/rp1_jump.webp) | ![舞蹈](doc/previews/rp1_dance.webp) |
 
 ## 依赖和安装
 
