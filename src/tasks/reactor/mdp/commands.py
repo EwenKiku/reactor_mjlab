@@ -374,6 +374,30 @@ class RetargetCommand(CommandTerm):
         )
       )
 
+  def set_motions(self, motion_files: list[str] | tuple[str, ...]) -> None:
+    """Swap the clip library without rebuilding the simulation.
+
+    Body calibration and the shared ``p_pos`` / ``p_ori`` stay as loaded.
+    ``p_z`` is resized to the new clips and left at zero for the caller to fill.
+    """
+    self.motion = SourceMotionLoader(
+      motion_files,
+      tuple(self.cfg.source_bodies),
+      device=self.device,
+      quaternion_order=self.cfg.quaternion_order,
+      motion_weights=self.cfg.motion_weights,
+    )
+    control_fps = 1.0 / self._env.step_dt
+    if self.motion.fps is not None and abs(self.motion.fps - control_fps) > 1e-3:
+      raise ValueError(
+        f"Source clips are {self.motion.fps} fps but the policy runs at "
+        f"{control_fps} Hz; resample them first."
+      )
+    self.mapping.z_nom = self.motion.z_nom * self.calibration.scale
+    self.p.p_z = torch.zeros(self.motion.num_motions, device=self.device)
+    self.failed_count = torch.zeros(self.motion.num_motions, device=self.device)
+    self._cached_reference = None
+
   def _requires_grad(self, flag: bool) -> None:
     for tensor in self.p.as_list():
       tensor.requires_grad_(flag)

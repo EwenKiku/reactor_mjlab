@@ -1,14 +1,13 @@
 """Retarget BONES-SEED BVH or converted source NPZ clips by rolling out a frozen policy.
 
-Each clip is written as a robot motion NPZ. Unless ``--no-video`` is set, a
-MuJoCo video is written beside it: the original human skeleton on the left,
-the retargeted robot on the right.
+Each accepted clip is written as a robot motion NPZ. A clip that loses the root
+or produces a non-finite state is left out of the directory. A single clip also
+gets a side-by-side MuJoCo video; a folder does not, unless ``--video`` is set.
 """
 
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import os
 import sys
@@ -279,46 +278,131 @@ def render_comparison(source_pos: np.ndarray, robot_path: Path, out: Path, xml: 
     robot_renderer.close()
 
 
-@torch.inference_mode()
-def rollout(paths, checkpoint, dst, device, seed, video: bool, robot: RobotExport):
-  cfg = robot.env_cfg(play=True)
-  cfg.seed = seed
-  cfg.scene.num_envs = len(paths)
-  cfg.events = {}
-  cfg.rewards = {}
-  cfg.terminations = {}
-  motion = cfg.commands["motion"]
-  motion.motion_files = tuple(paths)
-  motion.collect_upper = False
-  motion.sampling_mode = "start"
-  agent_cfg = robot.runner_cfg()
-  env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device=device), clip_actions=agent_cfg.clip_actions)
-  try:
-    runner = ReactorOnPolicyRunner(env, asdict(agent_cfg), device=device)
-    runner.load(str(checkpoint), load_cfg={"actor": True})
-    policy = runner.get_inference_policy(device)
-    obs, _ = env.reset()
-    cmd = env.unwrapped.command_manager.get_term("motion")
+def _drop_motion(dst: Path, name: str) -> None:
+  """Remove a rejected clip from the output directory."""
+  for path in (dst / f"{name}.npz", dst / "failed" / f"{name}.npz"):
+    path.unlink(missing_ok=True)
+
+
+def _failure_row(dst: Path, name: str, length: int, **fields) -> dict:
+  _drop_motion(dst, name)
+  row = dict(name=name, file=None, frames=length, success=False, video=None,
+             first_failed_frame=None, root_position_error_m=None,
+             root_orientation_error_deg=None, body_position_error_m=None,
+             body_orientation_error_deg=None, root_relative_body_error_m=None,
+             residual_force_N=None, residual_torque_Nm=None)
+  row.update(fields)
+  print(json.dumps(row), flush=True)
+  return row
+
+
+class ExportSession:
+  """One simulation and one loaded policy, reused across clip batches."""
+
+  def __init__(self, robot: RobotExport, checkpoint: Path, state: dict, device: str, seed: int, num_envs: int):
+    self.robot = robot
+    self.checkpoint = checkpoint
+    self.device = device
+    self.seed = seed
+    self.num_envs = num_envs
+    self.env = None
+    self.cmd = None
+    self.policy = None
+    names = state["retarget/motion_names"]
+    values = state["retarget/p_z"]
+    if torch.is_tensor(values):
+      values = values.detach().cpu().tolist()
+    self._height = dict(zip(names, values, strict=True))
+
+  def close(self) -> None:
+    if self.env is not None:
+      self.env.close()
+
+  def _open(self, paths: list[str]) -> None:
+    cfg = self.robot.env_cfg(play=True)
+    cfg.seed = self.seed
+    cfg.scene.num_envs = self.num_envs
+    cfg.events = {}
+    cfg.rewards = {}
+    cfg.terminations = {}
+    motion = cfg.commands["motion"]
+    motion.motion_files = tuple(paths)
+    motion.collect_upper = False
+    motion.sampling_mode = "start"
+    # Training allocates 800 constraint rows per world. A fallen clip in a
+    # parallel batch exceeds that and MuJoCo drops the extra contacts.
+    cfg.sim.njmax = max(cfg.sim.njmax or 0, 4096)
+    cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 1024)
+    agent_cfg = self.robot.runner_cfg()
+    self.env = RslRlVecEnvWrapper(
+      ManagerBasedRlEnv(cfg, device=self.device), clip_actions=agent_cfg.clip_actions
+    )
+    self.cmd = self.env.unwrapped.command_manager.get_term("motion")
+    runner = ReactorOnPolicyRunner(self.env, asdict(agent_cfg), device=self.device)
+    runner.load(str(self.checkpoint), load_cfg={"actor": True})
+    self.policy = runner.get_inference_policy(self.device)
+
+  def _use(self, paths: list[str]) -> None:
+    self.cmd.set_motions(paths)
+    self.cmd.p.p_z.copy_(self.cmd.p.p_z.new_tensor(
+      [self._height.get(name, 0.0) for name in self.cmd.motion.names]
+    ))
+    self.cmd._cached_reference = None
+
+  def _park(self, env_ids: torch.Tensor) -> None:
+    """Hold finished or fallen worlds above the ground with no contacts."""
+    entity = self.cmd.robot
+    origins = self.env.unwrapped.scene.env_origins[env_ids]
+    root = entity.data.default_root_state[env_ids].clone()
+    root[:, :2] = origins[:, :2]
+    root[:, 2] = origins[:, 2] + 3.0
+    root[:, 7:] = 0.0
+    joints = entity.data.default_joint_pos[env_ids]
+    entity.write_joint_state_to_sim(joints, torch.zeros_like(joints), env_ids=env_ids)
+    entity.write_root_state_to_sim(root, env_ids=env_ids)
+    entity.reset(env_ids)
+    self.env.unwrapped.sim.forward()
+
+  @torch.no_grad()
+  def rollout(self, paths: list[str], dst: Path, video: bool) -> list[dict]:
+    if self.env is None:
+      self._open(paths)
+    else:
+      self._use(paths)
+    obs, _ = self.env.reset()
+    cmd = self.cmd
+    assigned = cmd.motion_ids[: len(paths)]
+    expected = torch.arange(len(paths), device=assigned.device)
+    if not torch.equal(assigned, expected):
+      raise RuntimeError("Each export environment must track its own clip from frame 0")
     while (cmd.psi < 1).any():
-      obs, *_ = env.step(policy(obs))
+      obs, *_ = self.env.step(self.policy(obs))
     lengths = cmd.motion.lengths.tolist()
     buffers = {}
+    # A finished or fallen world keeps every contact until the longest clip
+    # in the batch ends. Park it above the ground so those rows go away.
+    parked = torch.zeros(self.num_envs, dtype=torch.bool, device=assigned.device)
+    if len(lengths) < self.num_envs:
+      parked[len(lengths) :] = True
+    length_t = torch.tensor(lengths, device=assigned.device)
     for t in range(max(lengths)):
+      if parked.any():
+        self._park(parked.nonzero(as_tuple=False).flatten())
       # The policy sees g[t] before the step. Record the resulting state
       # against that same g[t], including the last frame of the clip.
       ref = cmd.reference()
       if video:
         source = cmd._source_frames(slice(None))[0]
-      obs, *_ = env.step(policy(obs))
+      obs, *_ = self.env.step(self.policy(obs))
       entity = cmd.robot
-      pos = cmd.robot_body_pos_w - env.unwrapped.scene.env_origins[:, None]
+      pos = cmd.robot_body_pos_w - self.env.unwrapped.scene.env_origins[:, None]
       quat = cmd.robot_body_quat_w
       positions = (pos - ref.pos).norm(dim=-1)
       angles = quat_error_magnitude(quat, ref.quat)
       local = quat_apply_inverse(quat[:, :1].expand_as(quat), pos - pos[:, :1])
       local_target = quat_apply_inverse(ref.quat[:, :1].expand_as(ref.quat), ref.pos - ref.pos[:, :1])
       limb_error = (local[:, 1:] - local_target[:, 1:]).norm(dim=-1).mean(1)
-      wrench = env.unwrapped.action_manager.get_term("wrench").applied_wrench
+      wrench = self.env.unwrapped.action_manager.get_term("wrench").applied_wrench
       step = {
         "joint_pos": entity.data.joint_pos, "joint_vel": entity.data.joint_vel,
         "body_pos_w": pos, "body_quat_w": quat,
@@ -333,36 +417,46 @@ def rollout(paths, checkpoint, dst, device, seed, video: bool, robot: RobotExpor
         if key not in buffers:
           buffers[key] = value.new_empty((max(lengths), *value.shape))
         buffers[key][t].copy_(value)
+      ended = torch.zeros_like(parked)
+      ended[: len(lengths)] = t >= length_t - 1
+      root_bad = (positions[:, 0] > 1.0) | (angles[:, 0] > torch.pi / 4)
+      parked |= ended | root_bad | ~torch.isfinite(positions[:, 0])
     buffers = {key: value.cpu().numpy() for key, value in buffers.items()}
     summary = []
     for i, (name, length) in enumerate(zip(cmd.motion.names, lengths, strict=True)):
       data = {k: v[:length, i] for k, v in buffers.items() if k not in {"metrics", "source_pos"}}
       metrics = buffers["metrics"][:length, i]
-      if not all(np.isfinite(a).all() for a in [*data.values(), metrics]):
-        raise RuntimeError(f"Non-finite simulation state in {name}")
+      bad = [key for key, value in (*data.items(), ("metrics", metrics)) if not np.isfinite(value).all()]
+      if bad:
+        summary.append(_failure_row(dst, name, length, error="non_finite", non_finite=bad))
+        continue
       root_pos, root_rot, body_pos, body_rot, force, torque, limb_error = metrics.mean(axis=0).tolist()
       failures = np.flatnonzero((metrics[:, 0] > 1.0) | (metrics[:, 1] > np.pi / 4))
-      directory = dst / "failed" if failures.size else dst
-      directory.mkdir(parents=True, exist_ok=True)
-      out = directory / f"{name}.npz"
+      tracked = dict(
+        root_position_error_m=root_pos, root_orientation_error_deg=np.rad2deg(root_rot),
+        body_position_error_m=body_pos, body_orientation_error_deg=np.rad2deg(body_rot),
+        root_relative_body_error_m=limb_error, residual_force_N=force, residual_torque_Nm=torque,
+      )
+      if failures.size:
+        summary.append(_failure_row(
+          dst, name, length, error="tracking", first_failed_frame=int(failures[0]), **tracked,
+        ))
+        continue
+      _drop_motion(dst, name)
+      dst.mkdir(parents=True, exist_ok=True)
+      out = dst / f"{name}.npz"
       np.savez_compressed(out, fps=np.array([cmd.motion.fps], np.float32),
                           joint_names=entity.joint_names, body_names=cmd.cfg.target_bodies,
                           quaternion_order="wxyz", anchor_body=cmd.cfg.target_bodies[0], **data)
       video_path = None
       if video:
         video_path = dst / "videos" / f"{name}.mp4"
-        render_comparison(buffers["source_pos"][:length, i], out, video_path, robot.xml)
-      row = dict(file=str(out.relative_to(dst)), frames=length, success=not failures.size,
-                 video=None if video_path is None else str(video_path.relative_to(dst)),
-                 first_failed_frame=int(failures[0]) if failures.size else None,
-                 root_position_error_m=root_pos, root_orientation_error_deg=np.rad2deg(root_rot),
-                 body_position_error_m=body_pos, body_orientation_error_deg=np.rad2deg(body_rot),
-                 root_relative_body_error_m=limb_error, residual_force_N=force, residual_torque_Nm=torque)
+        render_comparison(buffers["source_pos"][:length, i], out, video_path, self.robot.xml)
+      row = dict(file=str(out.relative_to(dst)), frames=length, success=True, video=None if video_path is None else str(video_path.relative_to(dst)),
+                 first_failed_frame=None, **tracked)
       print(json.dumps(row), flush=True)
       summary.append(row)
     return summary
-  finally:
-    env.close()
 
 
 def main():
@@ -375,18 +469,23 @@ def main():
   )
   parser.add_argument("--src", type=Path, default=MOTION_DIR, help="BVH, source NPZ, directory, or SOMA tar.gz archive")
   parser.add_argument("--dst", type=Path, required=True)
-  parser.add_argument("--batch-size", type=int, default=8)
+  parser.add_argument("--batch-size", type=int, default=32,
+                      help="Parallel environments. The simulation is built once and reused.")
   parser.add_argument("--only", default="")
   parser.add_argument("--limit", type=int, default=0)
   parser.add_argument("--seed", type=int, default=42)
   parser.add_argument("--device", default="cuda:0")
+  parser.add_argument("--video", action="store_true",
+                      help="Write a side-by-side video for every clip. Default for a single clip.")
   parser.add_argument("--no-video", action="store_true",
                       help="Skip the side-by-side MuJoCo video and only write motion files")
   parser.add_argument("--resume", action="store_true",
-                      help="Skip clips whose NPZ is already in the output directory")
+                      help="Skip clips already exported or already recorded as failed")
   args = parser.parse_args()
   if args.batch_size < 1 or args.limit < 0:
     parser.error("batch-size must be positive and limit non-negative")
+  if args.video and args.no_video:
+    parser.error("Pass only one of --video and --no-video")
   state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)["infos"]["reactor"]
   if state.get("version") != 2 or state["source_preprocessing"]["yaw"] is None:
     parser.error("Use a motion-conditioned checkpoint trained with the BONES-SEED uniform calibration")
@@ -396,35 +495,62 @@ def main():
     parser.error(str(exc))
   print(f"Export robot: {robot.name}")
   if args.dst.exists() and any(args.dst.iterdir()) and not args.resume:
-    parser.error("Choose an empty output directory to keep successful and failed runs distinct")
+    parser.error("Choose an empty output directory, or pass --resume")
   args.dst.mkdir(parents=True, exist_ok=True)
-  done = {
-    path.name
-    for folder in (args.dst, args.dst / "failed") if folder.is_dir()
-    for path in folder.glob("*.npz")
-  }
+  failed_dir = args.dst / "failed"
+  if failed_dir.is_dir():
+    for path in failed_dir.glob("*.npz"):
+      path.unlink()
+  done = {path.name for path in args.dst.glob("*.npz")}
   summary = []
   report_path = args.dst / "clips.json"
   if args.resume and report_path.is_file():
-    summary = [row for row in json.loads(report_path.read_text())["clips"] if Path(row["file"]).name in done]
-  for paths in source_batches(args.src, args.only, args.limit, args.batch_size):
-    paths = [path for path in paths if f"{path.stem}.npz" not in done]
-    if not paths:
-      continue
-    with TemporaryDirectory() as tmp:
-      batch = prepare(paths, Path(tmp), state["source_preprocessing"])
-      summary += rollout(
-        batch, args.checkpoint, args.dst, args.device, args.seed,
-        video=not args.no_video, robot=robot,
+    for row in json.loads(report_path.read_text())["clips"]:
+      if row.get("success") and row.get("file") and Path(row["file"]).name in done:
+        summary.append(row)
+      elif not row.get("success"):
+        name = row.get("name") or Path(row["file"]).stem
+        _drop_motion(args.dst, name)
+        row = dict(row, name=name, file=None, video=None)
+        done.add(f"{name}.npz")
+        summary.append(row)
+  archive = args.src.name.endswith(".tar.gz")
+  planned = None if archive else source_files(args.src, args.only, args.limit)
+  many = True if planned is None else len(planned) > 1
+  video = args.video or (not args.no_video and not many)
+  if many and not video:
+    count = "an archive" if planned is None else f"{len(planned)} clips"
+    print(f"Writing trajectories only ({count}). Pass --video to render comparisons.")
+  if planned is None:
+    env_count = args.batch_size
+  else:
+    remaining = sum(1 for path in planned if f"{path.stem}.npz" not in done)
+    env_count = min(args.batch_size, max(remaining, 1))
+  session = None
+  try:
+    for paths in source_batches(args.src, args.only, args.limit, args.batch_size):
+      paths = [path for path in paths if f"{path.stem}.npz" not in done]
+      if not paths:
+        continue
+      with TemporaryDirectory() as tmp:
+        batch = prepare(paths, Path(tmp), state["source_preprocessing"])
+        if session is None:
+          session = ExportSession(
+            robot, args.checkpoint, state, args.device, args.seed, env_count,
+          )
+        summary += session.rollout(batch, args.dst, video)
+      for row in summary:
+        if row.get("success") and row.get("file"):
+          done.add(Path(row["file"]).name)
+        elif row.get("name"):
+          done.add(f"{row['name']}.npz")
+      report = dict(
+        checkpoint=str(args.checkpoint.resolve()), robot=robot.name, seed=args.seed, clips=summary,
       )
-    done.update(Path(row["file"]).name for row in summary)
-    report = dict(
-      checkpoint=str(args.checkpoint.resolve()), robot=robot.name, seed=args.seed, clips=summary,
-    )
-    report_path.write_text(json.dumps(report, indent=2) + "\n")
-    gc.collect()
-    if torch.cuda.is_available():
-      torch.cuda.empty_cache()
+      report_path.write_text(json.dumps(report, indent=2) + "\n")
+  finally:
+    if session is not None:
+      session.close()
   print(f"Completed {len(summary)} clips, {sum(r['success'] for r in summary)} passed root tracking thresholds.")
 
 

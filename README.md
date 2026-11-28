@@ -1,42 +1,236 @@
-# Pi Plus ReActor
+# ReActor（mjlab）
 
-用 BONES-SEED 的 SOMA 动作训练一个共享策略。输入是人体 BVH，输出是 Pi Plus 在 MuJoCo 中的 50 Hz 运动轨迹，包含浮动基座、22 个铰链关节及 17 个对应刚体的状态。学习算法沿用仓库的 mjlab 环境、RSL-RL PPO 和上层重定向参数更新。
+用 BONES-SEED 的 SOMA 动作训练共享策略，把人体动作重定向到机器人上。当前注册了两台机器人：
 
-## 用现成权重转换新动作
+| 任务名 | 机器人 | 日志目录 | 模型 |
+| --- | --- | --- | --- |
+| `Pi-Plus-ReActor-Flat` | Pi Plus | `logs/rsl_rl/pi_plus_reactor/` | `src/assets/robots/pi_plus/xmls/pi_plus.xml` |
+| `RP1-ReActor-Flat` | RP1（24 自由度） | `logs/rsl_rl/rp1_reactor/` | `src/assets/robots/rp1/mjcf/robot_24dof.xml` |
 
-在仓库根目录运行，本机已配置 Python 3.11 的 `reactor` 环境。
+物理步长 0.005 s，控制周期每 4 步一次，策略和导出轨迹都是 50 Hz。算法是 mjlab 里的 RSL-RL PPO，加上论文的上层重定向参数更新。论文原文见 [ReActor](doc/ReActor:%20Reinforcement%20Learning%20for%20Physics-Aware%20Motion%20Retargeting.pdf)。
+
+## 效果
+
+下面是 RP1 导出的左右对照：左边是人体骨架，右边是仿真里的机器人。文件在 `doc/previews/`，不放在会被忽略的 `outputs/`。
+
+<table>
+<tr>
+<td width="50%">走。停步转身 <code>walk_ff_stop_270_001__A072</code><br><video src="doc/previews/rp1_walk.mp4" controls muted loop playsinline width="100%"></video></td>
+<td width="50%">慢跑绕圈 <code>jog_ff_loop_360_001__A072</code><br><video src="doc/previews/rp1_jog.mp4" controls muted loop playsinline width="100%"></video></td>
+</tr>
+<tr>
+<td>前跳转身 <code>jump_ff_180_R_001__A192</code><br><video src="doc/previews/rp1_jump.mp4" controls muted loop playsinline width="100%"></video></td>
+<td>舞蹈 <code>dance_retro_jackson_jump_on_R_002__A309</code><br><video src="doc/previews/rp1_dance.mp4" controls muted loop playsinline width="100%"></video></td>
+</tr>
+</table>
+
+## 依赖和安装
+
+需要 Python 3.11 和一块带 CUDA 的 NVIDIA GPU。MuJoCo Warp、PyTorch 以及其余 Python 依赖写在 `ThirdParty/mjlab/pyproject.toml` 和 `ThirdParty/rsl_rl/pyproject.toml` 里。本仓库的 `rsl_rl` 要盖过 mjlab 声明的上游版本，所以两个包都用可编辑安装，并且把本地 `rsl_rl` 放在后面。
 
 ```bash
+conda create -n reactor python=3.11 -y
 conda activate reactor
-python -m tools.export_reactor_retarget \
-  --checkpoint checkpoints/pi_plus_boneseed_base.pt \
-  --src /path/to/new_motion.bvh \
-  --dst outputs/new_motion
+cd /path/to/reactor_mjlab
+pip install -e ThirdParty/mjlab -e ThirdParty/rsl_rl
+pip install pyyaml
+python -m scripts.list_envs
 ```
 
-`--src` 也接受 BVH 目录、同一版本转换器产生的源 NPZ，以及原始 SOMA 压缩包。目录和压缩包支持 `--only`（文件名子串）、`--limit` 和 `--batch-size`。每次使用一个空输出目录。下面的例子从本机数据包取出第一条动作，可直接运行。
+`list_envs` 的输出里应能看到 `Pi-Plus-ReActor-Flat` 和 `RP1-ReActor-Flat`。无显示器导出视频时，导出脚本会自己把 `MUJOCO_GL` 设为 `egl`。
+
+## 从数据到导出
+
+一条动作经过四个落盘阶段。中间的参考姿态 `g` 不写文件，每个控制步由人体 NPZ 和标定在线算出来。
+
+| 阶段 | 是什么 | 落在哪里 | 格式要点 |
+| --- | --- | --- | --- |
+| 1. 原始动捕 | SOMA BVH | BONES-SEED 压缩包或 `.bvh` 目录 | 厘米、Y 轴朝上，通常 120 Hz。完整骨架，通道顺序 `Zrotation Yrotation Xrotation`。只有根 `Hips` 带 `Xposition Yposition Zposition`。Uniform 与 Proportional 的差别是骨长，后者保留演员身材。 |
+| 2. 人体训练 NPZ | 正向运动学之后的 17 个刚体，给策略当源动作 `m` | 默认 `src/assets/bones_seed_motions/train/*.npz` | 米、Z 轴朝上，50 Hz。世界系 +X 朝前、+Y 朝左。四元数 `wxyz`。 |
+| 3. 机器人标定 | 人体刚体到机器人 link 的轴对齐，以及量位置偏差时的名义姿势 | `src/tasks/reactor/config/<robot>/calibration.yaml` | `R` 满足 `v_robot = R @ v_npz`。`nominal_joints` 是量这组数时的关节角。 |
+| 4. 策略权重 | PPO actor/critic，以及学到的重定向参数 | `logs/rsl_rl/<experiment>/<时间戳>/model_*.pt` | 版本 2。含 `retarget/p_pos`、`p_ori`、`p_z`，以及标定时的 `R_nom`、`x_nom`、`scale`。加载时用检查点里的标定盖过 yaml。 |
+| 5. 机器人轨迹 | 冻结策略在物理仿真里走出的轨迹 | `outputs/<robot>/*.npz` | 50 Hz。关节位置/速度，以及标定刚体的世界系位姿和速度。 |
+
+选片清单在 `tools/bones_seed_split.json`：`train` 与 `heldout` 两组，每行是压缩包内的 BVH 路径和原始文件的 SHA-256。训练读的是转换后的 NPZ，不读这份 JSON。
+
+### 人体训练 NPZ 的字段
+
+17 个刚体，顺序固定为：Hips、Chest、Head，左肩、左上臂、左前臂、左手，右侧对称的四个，左腿、左小腿、左脚，右侧对称的三个。
+
+| 字段 | 形状 | 含义 |
+| --- | --- | --- |
+| `fps` | 标量 | 50 |
+| `body_names` | 17 | 上面的名字 |
+| `body_pos_w` | `(T, 17, 3)` | 世界系位置，米 |
+| `body_quat_w` | `(T, 17, 4)` | 世界系朝向，`wxyz` |
+| `body_lin_vel_w` | `(T, 17, 3)` | 由相邻帧位置差分 |
+| `body_ang_vel_w` | `(T, 17, 3)` | 由相邻帧朝向差分 |
+| `nominal_pos`、`nominal_quat` | `(17, 3)`、`(17, 4)` | Uniform 绑定姿态，同一批片段共用 |
+| `root_height` | 标量 | 绑定姿态的根高度，米 |
+| `source_yaw` | 标量 | 把角色转到面对 +X 的固定偏航，弧度 |
+| `z_nom` | 标量 | 该片段双脚高度第 2 百分位的相反数。脚贴地用它，`body_pos_w` 本身不减 |
+| `quaternion_order` | 字符串 | `wxyz` |
+
+转换时把厘米、Y 朝上换成米、Z 朝上，再绕世界 Z 转 `source_yaw`。这个角来自 Uniform 骨架的绑定姿态，使双腿连线落到 +Y，角色面对 +X。位置线性插值、朝向球面插值，重采样到 50 Hz。第 0 帧髋部的水平位置被减掉。Proportional 片段会把骨长换成 Uniform 骨架，根平移按腿长比缩放。
+
+NPZ 里的位置和速度都在这个世界系里。+X 是标定后的世界前向，不是每帧贴着角色的脸；转身后根朝向会离开 +X。每个刚体的局部轴仍是变换后的 SOMA 关节轴。
+
+同目录的 `clips.json` 只是索引：帧率、刚体名、每条片段的帧数、`z_nom` 和来源路径。
+
+### 标定和在线参考
+
+`calibration.yaml` 不改人体文件。`links` 的每一项是人体刚体、机器人 body，以及旋转矩阵 `R`。位置偏差不写在 yaml 里：环境启动时按 `nominal_joints` 摆好机器人，用根高之比得到全局缩放 `scale`，再得到每个刚体在人体坐标系里的常数 `x_nom`。朝向使用 yaml 里的 `R`，存进检查点时的 `R_nom` 是它的转置，于是 `R_robot = R_source @ R_nom`。
+
+之后每一帧的参考 `g` 是人体姿态乘 `scale`，再套上这组固定偏移。可学习的 `p_pos`、`p_ori`、`p_z` 只做小修正，位置和朝向各自限制在 0.5 m 和 0.5 rad。`p_z` 每个片段一个。`nominal_joints` 必须和写 `R` 时的姿势是同一次摆放；只改关节角、不重算 `R`，朝向标定会和位置标定错开。
+
+RP1 没有单独的头 link，`Head` 和 `Chest` 都对应 `waist_yaw_link`。关节目标使用模型里的默认铰链顺序，不另写关节表。
+
+### 导出的机器人 NPZ
+
+只保存通过根部阈值的片段。任一帧根位置误差超过 1 m、根朝向误差超过 45°，或仿真出现非有限值时，不写 NPZ，并删掉输出目录里的同名文件。失败原因留在 `clips.json`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `fps` | 50 |
+| `joint_names` | 与 `joint_pos`（rad）、`joint_vel`（rad/s）的列对齐 |
+| `body_names` | 与下面四个 `body_*` 的刚体维对齐，第一项是根，例如 `base_link` |
+| `quaternion_order` | `wxyz` |
+| `anchor_body` | 根 body 名 |
+| `body_pos_w`、`body_quat_w` | 世界系位姿。环境原点已减去 |
+| `body_lin_vel_w`、`body_ang_vel_w` | 世界系速度 |
+
+真机执行还要下游跟踪控制器。重定向策略在仿真里使用了根部辅助力。
+
+## 准备训练集
+
+发布包里已有 `soma_uniform.tar.gz` 时，按清单重建 train / heldout。目标目录必须是空的。训练默认读取 `src/assets/bones_seed_motions/train`，所以把输出直接写到这个目录：
+
+```bash
+python -m tools.prepare_bones_seed \
+  --dataset /path/to/bones-seed \
+  --dst src/assets/bones_seed_motions
+```
+
+已经解压出 `soma_uniform/bvh` 时加上 `--extracted /path/to/that/tree`。脚本会核对每条 BVH 的 SHA-256，再做成 50 Hz 的人体 NPZ。
+
+手里是零散 BVH、不走这份清单时：
+
+```bash
+python -m tools.convert_soma_bvh_to_npz \
+  --src /path/to/bvh_or_dir \
+  --dst /path/to/converted/train
+```
+
+`--fps` 默认 50，`--limit N` 只转前 N 条，`--rig` 可换绑定骨架。这样得到的目录用下面的 `--env.commands.motion.motion-files` 指给训练。
+
+转换完可以看人体骨架是否和 NPZ 重合：
+
+```bash
+python -m tools.compare_source_motion --check-only
+python -m tools.visualize_link_frames
+```
+
+## 训练
+
+在仓库根目录、`reactor` 环境里运行。默认读 `src/assets/bones_seed_motions/train`，1024 个并行环境只是示例，显存不够就减小。
+
+```bash
+python -m scripts.train Pi-Plus-ReActor-Flat \
+  --env.scene.num-envs 1024 \
+  --agent.run-name boneseed
+
+python -m scripts.train RP1-ReActor-Flat \
+  --env.scene.num-envs 1024 \
+  --agent.run-name boneseed
+```
+
+自备的人体 NPZ 目录：
+
+```bash
+python -m scripts.train RP1-ReActor-Flat \
+  --env.commands.motion.motion-files /path/to/converted/train \
+  --env.scene.num-envs 1024
+```
+
+每次迭代每个环境采集 24 步。权重默认每 200 次迭代存一次，最长 20000 次迭代，写到 `logs/rsl_rl/<experiment_name>/<时间戳>/`。TensorBoard 日志在同一目录。
+
+看一条训练中的策略：
+
+```bash
+python -m scripts.play RP1-ReActor-Flat \
+  --checkpoint-file logs/rsl_rl/rp1_reactor/<时间戳>/model_600.pt
+```
+
+`play` 会在检查点旁边试着导出同名 `.onnx`。回归测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## 导出轨迹
+
+导出使用检查点里保存的标定和 `p_z`，不会改用后来手改的 yaml。单条输入会写对照视频；目录默认只写 NPZ。仿真只建一次，默认 32 条并行。输出目录非空时必须加 `--resume`。
 
 ```bash
 python -m tools.export_reactor_retarget \
-  --checkpoint checkpoints/pi_plus_boneseed_base.pt \
-  --src ~/data/RL/ASSETS/bones-seed/soma_uniform.tar.gz \
-  --limit 1 --dst outputs/archive_example
+  --robot rp1 \
+  --checkpoint logs/rsl_rl/rp1_reactor/<时间戳>/model_36000.pt \
+  --src src/assets/bones_seed_motions/train \
+  --dst outputs/rp1 \
+  --resume
 ```
 
-默认在 `cuda:0` 上推理。CPU 回放可加 `--device cpu`，并设置 `OMP_NUM_THREADS=1`。每个输入从第 0 帧开始，初始化期间冻结参考，之后逐帧运行冻结的 actor、位置控制器和物理仿真。新动作使用自身的地面高度估计和训练得到的共享刚体偏移，额外的每片段高度修正取零。
+`--src` 可以是一条 BVH、一个 BVH 或 NPZ 目录，或 SOMA 的 `tar.gz`。其它常用参数：
 
-`clips.json` 记录根部、全身刚体、根坐标系内肢体误差和残余力。整段中任一帧根部位置误差超过 1 m 或朝向误差超过 45° 时，轨迹写入 `failed/`，并记录首次越界帧。误差参照学习后的参数化目标计算。所有轨迹都连续运行到最后一帧，便于检查失败发生在什么时刻。
+| 参数 | 作用 |
+| --- | --- |
+| `--robot {pi_plus,rp1}` | 不写时按检查点里的刚体名单自动选 |
+| `--only 子串` | 只导出文件名里带这段文字的片段 |
+| `--limit N` | 只取前 N 条 |
+| `--batch-size 32` | 并行环境数。显存够可以加大 |
+| `--video` | 目录导出时也写左右对照视频 |
+| `--no-video` | 连单条导出也不写视频 |
+| `--device cuda:0` | CPU 回放用 `--device cpu`，并设 `OMP_NUM_THREADS=1` |
+| `--resume` | 跳过已经写出或已经记为失败的片段 |
+
+运动学回放导出的机器人 NPZ，不跑物理：
 
 ```bash
-python -m tools.replay_npz --motion outputs/new_motion \
-  --xml src/assets/robots/pi_plus/xmls/pi_plus.xml
+python -m tools.replay_npz \
+  --motion outputs/rp1 \
+  --xml src/assets/robots/rp1/mjcf/robot_24dof.xml
 ```
 
-NPZ 的 `joint_names` 对应 `joint_pos`（rad）和 `joint_vel`（rad/s）的列。`body_names` 对应世界系中的 `body_pos_w`（m）、`body_quat_w`（wxyz）、`body_lin_vel_w` 和 `body_ang_vel_w`。第一项 `base_link` 给出浮动基座轨迹。真机执行需要下游跟踪控制器，重定向策略本身使用了仿真根部辅助力。
+Pi Plus 把 `--xml` 换成 `src/assets/robots/pi_plus/xmls/pi_plus.xml`。空格暂停，左右方向键切片段。
 
-## 已交付权重的仿真验证
+## 脚本
 
-冻结最终权重，在 CPU MuJoCo Warp 上从第 0 帧连续运行，随机种子为 42。6 条留出动作共 2,955 帧，全部通过根部终止条件。下表先对每条动作的帧取均值，最后一行对动作等权平均。
+| 路径 | 作用 |
+| --- | --- |
+| `tools/soma_bvh.py` | BVH 解析、正向运动学，以及厘米 Y-up 到米 Z-up 的坐标变换。被别的脚本调用，没有自己的命令行入口。 |
+| `tools/convert_soma_bvh_to_npz.py` | 把 BVH 文件或目录转成人体训练 NPZ，并写 `clips.json`。 |
+| `tools/prepare_bones_seed.py` | 按 `tools/bones_seed_split.json` 从发布包抽出 train / heldout，核对 SHA-256 后转换。 |
+| `tools/bones_seed_split.json` | 选片清单，不是可执行脚本。 |
+| `tools/compare_source_motion.py` | 并排播放原始 BVH 和人体 NPZ。`--check-only` 只在终端打印误差。 |
+| `tools/visualize_link_frames.py` | 左边画原始 BVH 关节轴，右边画训练 NPZ 的刚体轴。 |
+| `scripts/list_envs.py` | 列出已注册任务。 |
+| `scripts/train.py` | 训练。任务名后的 `--env.*`、`--agent.*` 覆盖配置。 |
+| `scripts/play.py` | 用查看器播放检查点，并尝试导出 ONNX。 |
+| `tools/export_reactor_retarget.py` | 冻结 actor，在对应机器人的物理频率下滚出轨迹 NPZ。 |
+| `tools/replay_npz.py` | 把导出的关节轨迹写进 `qpos`，在 MuJoCo 窗口里运动学播放。 |
+
+## 和论文的对应关系
+
+| 论文里的步骤 | 本仓库 |
+| --- | --- |
+| 源动作 `m` | `tools/soma_bvh.py`、`tools/convert_soma_bvh_to_npz.py`：BVH 层级 FK，厘米 Y-up 到米 Z-up，固定 Uniform 姿态标定前向和侧向，50 Hz 重采样，每段估计 `z_nom`。 |
+| 名义标定，式 8–9 | `config/*/calibration.yaml` 的 `R` 与 `nominal_joints`。位置在启动时算出 `scale` 和 `x_nom`，朝向用 `R`。 |
+| 参数化映射 `m → g`，式 10–13 | `src/tasks/reactor/mdp/retarget.py`。`g` 是策略看到的参考，不另存文件。 |
+| 上层损失和参数更新 | `mdp/commands.py` 收集有效帧，`rl/runner.py` 对 `p` 做一步更新，并把 `p`、标定和策略一起写进检查点。 |
+| 下层 PPO | `config/pi_plus/rl_cfg.py`、`config/rp1/rl_cfg.py`。actor 看到根系中的参考刚体、相位、本体速度和关节、上一拍动作。动作是模型默认顺序的关节目标，再加 6 维根部辅助力，见 `mdp/actions.py`。 |
+| 物理状态 `s` | 导出脚本在训练用的模型和 50 Hz 下执行确定性策略，写成机器人 NPZ。 |
+
+跟踪奖励是论文 Table 1 的负平方误差，对刚体位置和测地朝向累加。Pi Plus 的已交付权重在 CPU 上、种子 42、从第 0 帧连续跑过 6 条留出动作共 2,955 帧，全部通过根部阈值。下表先对每条动作的帧取均值，最后一行对动作等权平均。
 
 | 留出动作 | 根位置误差（cm） | 根坐标系内肢体位置误差（cm） | 刚体朝向误差（°） |
 | --- | ---: | ---: | ---: |
@@ -48,81 +242,4 @@ NPZ 的 `joint_names` 对应 `joint_pos`（rad）和 `joint_vel`（rad/s）的�
 | 侧向行走停止 | 16.0 | 4.9 | 23.7 |
 | **平均** | **10.8** | **5.9** | **20.4** |
 
-肢体位置误差比较各自根坐标系内的 16 个非根刚体。世界系 17 刚体平均位置误差为 12.5 cm，平均辅助力模长为 31.9 N。侧向移动的全局位移跟踪误差最大。另从原始 Uniform 和 Proportional 压缩包各读取一条训练外动作，埃及舞和转体跳均完整通过相同阈值。交付范围是仿真动作生成，尚未做 Pi Plus 实机验证。
-
-[逐片段指标](outputs/pi_plus_base/heldout/clips.json) · [动作对照视频](outputs/pi_plus_base/preview.mp4) · [Uniform 压缩包样例](outputs/pi_plus_base/uniform_archive/clips.json) · [Proportional 压缩包样例](outputs/pi_plus_base/proportional_archive/clips.json)
-
-## 数据和训练
-
-已转换的数据位于 `src/assets/motions/reactor/bones_seed/{train,heldout}`。训练集包含走、转、跑、跳、蹲起过渡、坐、踢和舞蹈等 42 条动作，共 63,974 帧。留出集含 6 条完整动作，共 2,955 帧。同名动作的不同演员和镜像版本归入同一组。本次使用 SOMA Uniform 子集；对 Proportional BVH，转换器把肢段长度统一到训练骨架，并按腿长比调整平移。G1 关节数据没有参与训练。
-
-### 原始 BVH 与训练 NPZ
-
-原始 BVH 是动捕文件：完整 SOMA 骨架，每个关节一段局部偏移，再加上 `Zrotation Yrotation Xrotation`。只有根（Hips）带 `Xposition Yposition Zposition`。单位是厘米、Y 轴朝上，BONES-SEED 一般是 120 Hz。Uniform 和 Proportional 的差别在骨长，后者保留演员身材。
-
-训练 NPZ 是正向运动学之后、给策略用的 17 个刚体轨迹：Hips、Chest、Head，以及左右肩、臂、前臂、手、腿、小腿、脚。每个刚体存世界系位置 `body_pos_w`、朝向 `body_quat_w`（`wxyz`），以及由相邻帧差分得到的线速度和角速度。`nominal_pos`、`nominal_quat`、`root_height`、`source_yaw` 来自固定的 Uniform 绑定姿态，同一批片段共用，不从单条表演估计。`z_nom` 是该片段双脚高度第 2 百分位的相反数，用来把脚放到地面上；`body_pos_w` 本身不预先减去它。
-
-转换时把厘米、Y 朝上换成米、Z 朝上，再绕世界 Z 转一个固定偏航。这个角由 Uniform 骨架的绑定姿态算出，使双腿连线落到 +Y，角色在标称姿势下面对 +X。默认再重采样到 50 Hz：位置线性插值，朝向用球面插值。第 0 帧髋部的水平位置被减掉，片段从 XY 原点起步。Proportional 片段会把骨长换成训练用的 Uniform 骨架，根平移按腿长比缩放；Uniform 片段骨长不动。
-
-NPZ 里的位置、朝向、线速度和角速度都在这同一个世界系里：Z 朝上，+X 是标定后的正前方，+Y 朝左。+X 是世界轴，不是每帧都贴着角色的脸；转身之后根朝向会离开 +X，速度仍写在世界系。每个刚体的四元数是该刚体在这个世界系中的朝向，刚体自己的局部轴仍是解剖轴。`fps`、`z_nom`、`root_height`、`source_yaw` 只是标量。
-
-### 换机器人时的坐标对齐
-
-BVH 到 NPZ 只处理人体。每个机器人在自己的 `calibration.yaml` 里写 17 对刚体，以及 npz 体轴到 link 轴的旋转矩阵 `R`（`v_robot = R @ v_npz`）。位置仍用标称姿势：根高之比是全局缩放 `scale`，每个刚体再得到局部位置差 `x_nom`。朝向不再现场重算，直接使用这份矩阵。之后每帧参考都是人体姿态乘 `scale`，再套上这组固定偏移。可学习的 `p_pos`、`p_ori`、`p_z` 只在这个结果上做小修正，位置和朝向各自限制在 0.5 m 和 0.5 rad。
-
-换机器人时改该机器人目录下的 `calibration.yaml`，不改动作文件。`links` 写人体刚体到模型 body 的对应和旋转矩阵；`nominal_joints` 把机器人摆成和 SOMA 一样的双臂平举（左右 `shoulder_roll` 为 ±90°）；`foot_bodies` 和 `foot_geoms` 负责贴地。人体 NPZ 已经朝向 +X。关节目标使用模型默认顺序。
-
-对照每个 link 的局部轴时，在 `reactor` 环境下运行：
-
-```bash
-python -m tools.visualize_link_frames
-```
-
-默认使用训练标定的 Uniform 骨架，并写出 `outputs/link_frames/soma_base_skel_minimal.npz`。左侧是原始 BVH 的全部关节，红绿蓝仍是 BVH 的局部 X/Y/Z，只把骨架转到 Z 朝上以便观看。右侧是 NPZ 的标称姿态，红绿蓝是训练用的局部轴，世界系为 Z 朝上、+X 朝前、+Y 朝左。`[` 和 `]` 切换关节，`N` 在标称姿态和动作帧之间切换。其它 BVH 用 `--bvh` 指定，输出路径用 `--out`。
-
-### 检查 BVH 到人体 NPZ 的转换
-
-在 `reactor` 环境下运行 `python -m tools.compare_source_motion`，即可打开 MuJoCo 原生窗口，同步播放一条训练动作。查看其他配对文件时运行
-
-```bash
-python -m tools.compare_source_motion --bvh /path/to/motion.bvh \
-  --npz /path/to/train/motion.npz
-```
-
-左侧青色为原始人体骨架，右侧橙色为训练 NPZ 的 17 个刚体。两者按 NPZ 时间戳对齐，并排显示时只增加水平展示间距。空格暂停或播放，左右键逐帧，`[` 和 `]` 切换关节并显示局部坐标轴、位置差和朝向差。`O` 在并排和原位叠加之间切换。叠加时比较同名的 17 个点，Proportional 输入采用转换时的统一骨长。加 `--check-only` 可在终端查看整段误差。
-
-选片记录及原始 BVH 的 SHA-256 保存在 [数据清单](tools/bones_seed_split.json)。若需从发布的压缩包重建这次划分，可取一个新目录运行：
-
-```bash
-python -m tools.prepare_bones_seed \
-  --dataset /home/kiku/data/RL/ASSETS/bones-seed \
-  --dst /tmp/pi_plus_bones_seed
-```
-
-在其他机器上先安装仓库依赖：
-
-```bash
-pip install -e ThirdParty/mjlab -e ThirdParty/rsl_rl
-python -m scripts.list_envs
-```
-
-训练使用论文 Table 1 的负平方跟踪误差。逐刚体累计位置和测地朝向误差，关节动作差分只计算 20 个受控关节，同时做上层参数更新。
-
-```bash
-python -m scripts.train Pi-Plus-ReActor-Flat \
-  --env.scene.num-envs 1024 --agent.save-interval 100 --agent.run-name boneseed
-```
-
-自定义训练集可通过 `--env.commands.motion.motion-files /path/to/converted/train` 指定。BVH 批量转换入口为 `python -m tools.convert_soma_bvh_to_npz --src /path/to/bvh --dst /path/to/converted/train`。默认只读训练目录。复现回归检查可运行 `python -m unittest discover -s tests -v`。
-
-## 实现与论文的对应关系
-
-| 位置 | 本仓库的实现 |
-| --- | --- |
-| `tools/soma_bvh.py`、`tools/convert_soma_bvh_to_npz.py` | 按 BVH 层级做 FK，将厘米、Y-up 转为米、Z-up。用数据集发布的固定 SOMA 姿态标定前向和侧向，逐片段重采样与估计地面高度。 |
-| `config/*/calibration.yaml`、`mdp/retarget.py` | 各机器人的 17 对刚体和 npz 到 link 的旋转矩阵；位置仍由标称姿势标定，论文式 8–13 的映射。 |
-| `mdp/commands.py`、`rl/runner.py` | 用物理 rollout 的有效帧计算上层损失，通过参数化参考反传并投影更新，保存和恢复共享偏移、分片段高度、标定、策略及观测归一化。 |
-| `config/pi_plus/env_cfg.py`、`config/rp1/env_cfg.py`、`mdp/actions.py` | actor 接收对应刚体在机器人根系中的位置、6D 朝向、线/角速度，以及本体状态、历史动作和初始化相位。关节目标按模型默认顺序，另加 6 维辅助 wrench。 |
-| `tools/export_reactor_retarget.py` | 在训练时使用的机器人模型和控制频率下执行确定性策略，导出物理状态。 |
-
-本次训练平台为 RTX 5080、MuJoCo Warp、1,024 并行环境 × 每轮 24 步。论文实验使用 Isaac Sim、4,096 环境、20,000 轮以及其他机器人和数据集。这里沿用双层优化、残余力控制和策略条件输入；Pi Plus 的力矩尺度、初始化扰动、训练预算和数据覆盖有单独配置。论文原文见 [ReActor](doc/ReActor:%20Reinforcement%20Learning%20for%20Physics-Aware%20Motion%20Retargeting.pdf)。
+肢体位置误差比较各自根坐标系内的 16 个非根刚体。世界系 17 刚体平均位置误差为 12.5 cm，平均辅助力模长为 31.9 N。这是 Pi Plus 仿真结果，不是 RP1，也还没有实机跟踪。RP1 的对照片见上面的效果一节。
